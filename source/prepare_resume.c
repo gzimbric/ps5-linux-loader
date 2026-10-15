@@ -1,6 +1,7 @@
 #include "prepare_resume.h"
 #include "../shellcode_kernel/shellcode_kernel.h"
 #include "../shellcode_kernel/shellcode_kernel_args.h"
+#include "../shellcode_kernel/shellcode_kernel_args_validate.h"
 #include "config.h"
 #include "iommu.h"
 #include "offsets.h"
@@ -69,19 +70,25 @@ int prepare_resume(void **shellcode_kernel, size_t *shellcode_kernel_len) {
     return -1;
   }
 
+  /* Build and validate the argument block before allocating or publishing. */
+  uint64_t args_va = prepare_sck_args();
+  if (args_va == 0)
+    return -1;
+
   // Copy shellcode_kernel.
   *shellcode_kernel =
       mmap(NULL, ALIGN_UP(shellcode_kernel_bin_len, PAGE_SIZE),
            PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (*shellcode_kernel == MAP_FAILED)
+    return -1;
   *shellcode_kernel_len = shellcode_kernel_bin_len;
   memcpy(*shellcode_kernel, shellcode_kernel_bin, shellcode_kernel_bin_len);
 
-  uint64_t args_va = prepare_sck_args();
   if (update_sck_args_ptr((uint64_t)*shellcode_kernel, args_va))
     return -1;
 
   // Install shellcode_kernel in kernel space.
-  for (int i = 0; i < shellcode_kernel_bin_len; i += PAGE_SIZE) {
+  for (size_t i = 0; i < shellcode_kernel_bin_len; i += PAGE_SIZE) {
     install_page_syscore(kernel_cave_shellcode + i,
                          vtophys_user((uintptr_t)*shellcode_kernel + i), 0);
   }
@@ -117,33 +124,44 @@ int update_sck_args_ptr(uint64_t shellcode, uint64_t args) {
 }
 
 uint64_t prepare_sck_args(void) {
-  shellcode_kernel_args args;
+  shellcode_kernel_args args = {0};
   args.fw_version = fw;
   args.ktext = ktext;
   args.kdata = kdata;
   args.dmap_base = dmap;
 
-  args.fun_printf = ktext + env_offset.FUN_PRINTF;
-  args.fun_hv_iommu_set_buffers = ktext + env_offset.FUN_HV_IOMMU_SET_BUFFERS;
+  /* A missing offset must remain NULL, never become ktext. */
+#define KTEXT_OR_NULL(offset) ((offset) == 0 ? 0 : ktext + (offset))
+  args.fun_printf = KTEXT_OR_NULL(env_offset.FUN_PRINTF);
+  args.fun_hv_iommu_set_buffers =
+      KTEXT_OR_NULL(env_offset.FUN_HV_IOMMU_SET_BUFFERS);
   args.fun_hv_iommu_wait_completion =
-      ktext + env_offset.FUN_HV_IOMM_WAIT_COMPLETION;
-  args.fun_smp_rendezvous = ktext + env_offset.FUN_SMP_RENDEZVOUS;
+      KTEXT_OR_NULL(env_offset.FUN_HV_IOMM_WAIT_COMPLETION);
+  args.fun_smp_rendezvous = KTEXT_OR_NULL(env_offset.FUN_SMP_RENDEZVOUS);
   args.fun_smp_no_rendevous_barrier =
-      ktext + env_offset.FUN_SMP_NO_RENDEVOUS_BARRIER;
-  args.g_vbios = ktext + env_offset.G_VBIOS;
+      KTEXT_OR_NULL(env_offset.FUN_SMP_NO_RENDEVOUS_BARRIER);
+  args.g_vbios = KTEXT_OR_NULL(env_offset.G_VBIOS);
 
-  args.fun_transmitter_control = ktext + env_offset.FUN_TRANSMITTER_CONTROL;
-  args.fun_mp3_initialize = ktext + env_offset.FUN_MP3_INITIALIZE;
-  args.fun_mp3_invoke = ktext + env_offset.FUN_MP3_INVOKE;
+  args.fun_transmitter_control =
+      KTEXT_OR_NULL(env_offset.FUN_TRANSMITTER_CONTROL);
+  args.fun_mp3_initialize = KTEXT_OR_NULL(env_offset.FUN_MP3_INITIALIZE);
+  args.fun_mp3_invoke = KTEXT_OR_NULL(env_offset.FUN_MP3_INVOKE);
 
-  args.iommu_softc = ktext + env_offset.IOMMU_SOFTC;
+  args.iommu_softc = KTEXT_OR_NULL(env_offset.IOMMU_SOFTC);
 
-  args.kernel_uart_override = ktext + env_offset.KERNEL_UART_OVERRIDE;
-  args.kernel_cfi_check = ktext + env_offset.KERNEL_CFI_CHECK;
+  args.kernel_uart_override =
+      KTEXT_OR_NULL(env_offset.KERNEL_UART_OVERRIDE);
+  args.kernel_cfi_check = KTEXT_OR_NULL(env_offset.KERNEL_CFI_CHECK);
+#undef KTEXT_OR_NULL
   args.hv_handle_vmexit_pa = env_offset.HV_HANDLE_VMEXIT_PA;
   args.hv_code_cave_pa = env_offset.HV_CODE_CAVE_PA;
 
   args.linux_info_va = linux_i.linux_info;
+
+  if (fw == PS5_FW_1160 && validate_shellcode_kernel_args_1160(&args) != 0) {
+    notify("11.60 wake arguments failed preflight; no state was changed\n");
+    return 0;
+  }
 
   uint64_t args_cave = pa_to_dmap(alloc_page());
   kernel_copyin(&args, args_cave, sizeof(args));

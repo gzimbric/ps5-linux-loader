@@ -174,15 +174,19 @@ void boot_linux(void) {
   // Common bootloader code
   install_hv_code();
 
-  memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000);
+  if (g_vbios != 0)
+    memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000);
 
   // Enable DP phys link.
-  dp_enable_link_phy(4, 30);
+  if (transmitter_control != NULL)
+    dp_enable_link_phy(4, 30);
 
   // Initialize hdcp in mp3.
-  mp3_initialize(0);
-  mp3_set_hdcp_packet(0, 1);
-  mp3_enable_output(0, 1);
+  if (mp3_initialize != NULL && mp3_invoke != NULL) {
+    mp3_initialize(0);
+    mp3_set_hdcp_packet(0, 1);
+    mp3_enable_output(0, 1);
+  }
 
   // Copy bzImage and initrd into contiguous memory.
   memcpy(&info, (void *)args.linux_info_va, sizeof(struct linux_info));
