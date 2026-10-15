@@ -74,5 +74,6 @@ extern offset_list off_0720;
 extern offset_list off_0740;
 extern offset_list off_0760;
 extern offset_list off_0761;
+extern offset_list off_1160;
 
 #endif

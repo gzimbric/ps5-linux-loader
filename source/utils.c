@@ -17,8 +17,12 @@ uint32_t fw;
 struct linux_info linux_i;
 
 int setup_env(void) {
+#if STAGE2A_1160
+  notify("11.60 Stage 2A: staging the inert official wake page only.\n");
+#else
   notify("Welcome to ps5-linux-loader. We'll defeat HV and prepare the system "
          "to boot Linux on sleep resume.\n");
+#endif
   if (set_offsets())
     return -1;
   if (init_global_vars())
@@ -27,7 +31,8 @@ int setup_env(void) {
 }
 
 int set_offsets(void) {
-  fw = (kernel_get_fw_version() >> 0x10) & 0xFFFF;
+  uint32_t raw_fw = kernel_get_fw_version();
+  fw = (raw_fw >> 0x10) & 0xFFFF;
   if (fw == 0)
     return -1;
   switch (fw) {
@@ -97,6 +102,14 @@ int set_offsets(void) {
   case 0x0761:
     env_offset = off_0761;
     break;
+#if STAGE2A_1160
+  case 0x1160:
+    /* Fail closed on the exact retail build observed on the target. */
+    if (raw_fw != 0x11600005U)
+      return -1;
+    env_offset = off_1160;
+    break;
+#endif
   default:
     return -1;
   }
@@ -377,4 +390,127 @@ void install_page_syscore(vm_offset_t va, vm_paddr_t pa, int bits) {
   uintptr_t syscore_pmap = getpmap(kernel_get_proc(MINI_SYSCORE_PID));
   uintptr_t syscore_pml4 = kread64(syscore_pmap + 0x20);
   install_page(syscore_pml4, va, pa, bits);
+}
+
+int rollback_page_syscore(page_install_transaction *transaction) {
+  int failed = 0;
+  while (transaction->count > 0) {
+    size_t i = --transaction->count;
+    kwrite64(transaction->entry_va[i], transaction->original[i]);
+    if (kread64(transaction->entry_va[i]) != transaction->original[i])
+      failed = -1;
+  }
+  return failed;
+}
+
+static void remember_page_entry(page_install_transaction *transaction,
+                                uintptr_t entry_va, uint64_t original) {
+  size_t i = transaction->count++;
+  transaction->entry_va[i] = entry_va;
+  transaction->original[i] = original;
+}
+
+static int get_syscore_page_root(uintptr_t *pml4) {
+  uintptr_t proc = kernel_get_proc(MINI_SYSCORE_PID);
+  if ((proc >> 48) != 0xffff)
+    return -1;
+  uintptr_t vm = kread64(proc + KERNEL_OFFSET_PROC_P_VMSPACE);
+  if ((vm >> 48) != 0xffff)
+    return -1;
+  uintptr_t pmap = kread64(vm + env_offset.VMSPACE_VM_PMAP);
+  if ((pmap >> 48) != 0xffff)
+    return -1;
+  *pml4 = kread64(pmap + 0x20);
+  return ((*pml4 >> 48) == 0xffff) ? 0 : -1;
+}
+
+int install_page_rx_syscore(vm_offset_t va, vm_paddr_t pa, int bits,
+                            page_install_transaction *transaction) {
+  memset(transaction, 0, sizeof(*transaction));
+  if ((va & (PAGE_SIZE - 1)) != 0 || (pa & (PAGE_SIZE - 1)) != 0 ||
+      (bits & (PG_B_RW | (1ULL << NX) | (1ULL << XO))) != 0)
+    return -1;
+
+  uintptr_t pml4;
+  if (get_syscore_page_root(&pml4))
+    return -1;
+  uint64_t entry;
+
+  uintptr_t pml4e = pml4 + pmap_pml4e_index(va) * 8;
+  entry = kread64(pml4e);
+  remember_page_entry(transaction, pml4e, entry);
+  if (!PAGE_P(entry)) {
+    entry = alloc_page() | PG_B_RW | PG_B_P;
+    kwrite64(pml4e, entry);
+  } else if (!PAGE_RW(entry) || (entry & (1ULL << NX)) || PAGE_XO(entry)) {
+    goto fail;
+  }
+
+  uintptr_t pdpe = pa_to_dmap(PAGE_PA(entry)) + pmap_pdpe_index(va) * 8;
+  entry = kread64(pdpe);
+  remember_page_entry(transaction, pdpe, entry);
+  if (!PAGE_P(entry)) {
+    entry = alloc_page() | PG_B_RW | PG_B_P;
+    kwrite64(pdpe, entry);
+  } else if (PAGE_PS(entry) || !PAGE_RW(entry) ||
+             (entry & (1ULL << NX)) || PAGE_XO(entry)) {
+    goto fail;
+  }
+
+  uintptr_t pde = pa_to_dmap(PAGE_PA(entry)) + pmap_pde_index(va) * 8;
+  entry = kread64(pde);
+  remember_page_entry(transaction, pde, entry);
+  if (!PAGE_P(entry)) {
+    entry = alloc_page() | PG_B_RW | PG_B_P;
+    kwrite64(pde, entry);
+  } else if (PAGE_PS(entry) || !PAGE_RW(entry) ||
+             (entry & (1ULL << NX)) || PAGE_XO(entry)) {
+    goto fail;
+  }
+
+  uintptr_t pte = pa_to_dmap(PAGE_PA(entry)) + pmap_pte_index(va) * 8;
+  for (uint64_t i = 0; i < PAGE_SIZE / 0x1000; i++) {
+    uint64_t old_pte = kread64(pte + i * 8);
+    remember_page_entry(transaction, pte + i * 8, old_pte);
+    if (old_pte != 0)
+      goto fail;
+  }
+  pte_store(pte, pa | PG_B_P | bits);
+  return 0;
+
+fail:
+  return rollback_page_syscore(transaction) ? -2 : -1;
+}
+
+int verify_page_rx_syscore(vm_offset_t va, vm_paddr_t pa) {
+  uintptr_t table;
+  if (get_syscore_page_root(&table))
+    return -1;
+
+  for (int level = 0; level < 4; level++) {
+    int shift = 39 - level * 9;
+    uint64_t index = (va >> shift) & 0x1ff;
+    uint64_t entry = kread64(table + index * 8);
+
+    if (!PAGE_P(entry) || (entry & (1ULL << NX)) || PAGE_XO(entry))
+      return -1;
+    if (level < 3 && !PAGE_RW(entry))
+      return -1;
+    if (level == 3) {
+      if (PAGE_RW(entry) || PAGE_PA(entry) != PAGE_PA(pa))
+        return -1;
+      for (uint64_t i = 0x1000; i < PAGE_SIZE; i += 0x1000) {
+        uint64_t sibling = kread64(table + (index + i / 0x1000) * 8);
+        if (!PAGE_P(sibling) || PAGE_RW(sibling) ||
+            (sibling & (1ULL << NX)) || PAGE_XO(sibling) ||
+            PAGE_PA(sibling) != PAGE_PA(pa + i))
+          return -1;
+      }
+      return 0;
+    }
+    if ((level == 1 || level == 2) && PAGE_PS(entry))
+      return -1;
+    table = pa_to_dmap(PAGE_PA(entry));
+  }
+  return -1;
 }

@@ -21,6 +21,7 @@ LDFLAGS := -nostdlib -static -no-pie -Wl,--build-id=none \
 
 TARGET := shellcode_kernel_1160.elf
 BIN := shellcode_kernel_1160.bin
+HEADER := shellcode_kernel_1160.h
 OBJ := main.o
 
 all: $(BIN)
@@ -36,6 +37,9 @@ $(BIN): $(TARGET)
 	$(OBJCOPY) -O binary -j .shell_code $(TARGET) $(BIN)
 	@size=$$(wc -c < $(BIN)); test "$$size" -le $$((0x4000))
 
+$(HEADER): $(BIN)
+	xxd -i $(BIN) > $(HEADER)
+
 check: $(BIN)
 	@size=$$(wc -c < $(BIN)); test "$$size" -le $$((0x4000))
 	@markers=$$(xxd -p $(BIN) | tr -d '\n' | grep -o \
@@ -47,4 +51,4 @@ check: $(BIN)
 	@! $(READELF) -lW $(TARGET) | grep -Eq 'LOAD.*RWE'
 
 clean:
-	rm -f $(OBJ) $(TARGET) $(BIN)
+	rm -f $(OBJ) $(TARGET) $(BIN) $(HEADER)

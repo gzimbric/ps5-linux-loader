@@ -1,5 +1,9 @@
 #include "prepare_resume.h"
+#if STAGE2A_1160
+#include "../shellcode_kernel_1160/shellcode_kernel_1160.h"
+#else
 #include "../shellcode_kernel/shellcode_kernel.h"
+#endif
 #include "../shellcode_kernel/shellcode_kernel_args.h"
 #include "../shellcode_kernel/shellcode_kernel_args_validate.h"
 #include "config.h"
@@ -9,6 +13,82 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/mman.h>
+#include <unistd.h>
+
+#if STAGE2A_1160
+static void stage2a_rollback_or_hold(page_install_transaction *transaction) {
+  if (rollback_page_syscore(transaction) == 0)
+    return;
+  notify("11.60 Stage 2A: rollback readback failed; holding all backing. "
+         "Cold reboot now.\n");
+  while (1)
+    sleep(30);
+}
+
+static int prepare_resume_1160_stage2a(void **shellcode_kernel,
+                                      size_t *shellcode_kernel_len) {
+  uint64_t args_va = prepare_sck_args();
+  if (args_va == 0)
+    return -1;
+
+  *shellcode_kernel = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
+                           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (*shellcode_kernel == MAP_FAILED)
+    return -1;
+
+  memset(*shellcode_kernel, 0, PAGE_SIZE);
+  memcpy(*shellcode_kernel, shellcode_kernel_1160_bin,
+         shellcode_kernel_1160_bin_len);
+  *shellcode_kernel_len = shellcode_kernel_1160_bin_len;
+
+  if (update_sck_args_ptr((uint64_t)*shellcode_kernel,
+                          *shellcode_kernel_len, args_va))
+    return -1;
+
+  uint64_t base_pa = vtophys_user((uintptr_t)*shellcode_kernel);
+  if (base_pa == 0 || (base_pa & 0x3fff) != 0) {
+    notify("11.60 Stage 2A: wake backing is not 16-KiB aligned\n");
+    return -1;
+  }
+  for (uint64_t i = 0x1000; i < PAGE_SIZE; i += 0x1000) {
+    if (vtophys_user((uintptr_t)*shellcode_kernel + i) != base_pa + i) {
+      notify("11.60 Stage 2A: wake backing is not physically contiguous\n");
+      return -1;
+    }
+  }
+
+  page_install_transaction transaction = {0};
+  int install_result = install_page_rx_syscore(
+      kernel_cave_shellcode, base_pa, 0, &transaction);
+  if (install_result == -2) {
+    notify("11.60 Stage 2A: install rollback failed; holding all backing. "
+           "Cold reboot now.\n");
+    while (1)
+      sleep(30);
+  }
+  if (install_result != 0) {
+    notify("11.60 Stage 2A: destination occupied or RX install failed\n");
+    return -1;
+  }
+  if (verify_page_rx_syscore(kernel_cave_shellcode, base_pa)) {
+    stage2a_rollback_or_hold(&transaction);
+    notify("11.60 Stage 2A: RX alias verification failed\n");
+    return -1;
+  }
+
+  uint8_t readback[sizeof(shellcode_kernel_1160_bin)];
+  kread(pa_to_dmap(base_pa), readback, sizeof(readback));
+  if (memcmp(readback, *shellcode_kernel, sizeof(readback)) != 0) {
+    stage2a_rollback_or_hold(&transaction);
+    notify("11.60 Stage 2A: wake byte readback failed\n");
+    return -1;
+  }
+
+  notify("11.60 Stage 2A PASS: inert wake page staged RX at fixed alias; "
+         "no hook/HV/rest/Linux action was taken\n");
+  return 0;
+}
+#endif
 
 int remove_xotext(void) {
   uint64_t start = ktext;
@@ -65,6 +145,12 @@ int kernel_pmap_invalidate_all(void) {
 }
 
 int prepare_resume(void **shellcode_kernel, size_t *shellcode_kernel_len) {
+#if STAGE2A_1160
+  if (fw != PS5_FW_1160)
+    return -1;
+  return prepare_resume_1160_stage2a(shellcode_kernel,
+                                    shellcode_kernel_len);
+#else
   if (env_offset.KERNEL_CODE_CAVE == 0) {
     printf("Error: missing code cave offset\n");
     return -1;
@@ -84,7 +170,8 @@ int prepare_resume(void **shellcode_kernel, size_t *shellcode_kernel_len) {
   *shellcode_kernel_len = shellcode_kernel_bin_len;
   memcpy(*shellcode_kernel, shellcode_kernel_bin, shellcode_kernel_bin_len);
 
-  if (update_sck_args_ptr((uint64_t)*shellcode_kernel, args_va))
+  if (update_sck_args_ptr((uint64_t)*shellcode_kernel,
+                          shellcode_kernel_bin_len, args_va))
     return -1;
 
   // Install shellcode_kernel in kernel space.
@@ -104,19 +191,24 @@ int prepare_resume(void **shellcode_kernel, size_t *shellcode_kernel_len) {
   }
 
   return 0;
+#endif
 }
 
-int update_sck_args_ptr(uint64_t shellcode, uint64_t args) {
+int update_sck_args_ptr(uint64_t shellcode, size_t shellcode_len,
+                        uint64_t args) {
   // Find the address 0x11AA11AA11AA11AA used as marker
-  int offset = -1;
-  for (uint64_t i = 0; i < 0x40; i++) {
+  size_t offset = 0;
+  size_t matches = 0;
+  if (shellcode_len < sizeof(uint64_t))
+    return -1;
+  for (size_t i = 0; i <= shellcode_len - sizeof(uint64_t); i++) {
     if (*(uint64_t *)(shellcode + i) == 0x11AA11AA11AA11AA) {
       offset = i;
-      break;
+      matches++;
     }
   }
-  if (offset == -1) {
-    notify("Could not find offset of args_ptr address - Aborting\n");
+  if (matches != 1) {
+    notify("Expected exactly one args_ptr marker - Aborting\n");
     return -1;
   }
   *(uint64_t *)(shellcode + offset) = args;
@@ -165,6 +257,16 @@ uint64_t prepare_sck_args(void) {
 
   uint64_t args_cave = pa_to_dmap(alloc_page());
   kernel_copyin(&args, args_cave, sizeof(args));
+
+  if (fw == PS5_FW_1160) {
+    shellcode_kernel_args readback = {0};
+    kernel_copyout(args_cave, &readback, sizeof(readback));
+    if (memcmp(&args, &readback, sizeof(args)) != 0 ||
+        validate_shellcode_kernel_args_1160(&readback) != 0) {
+      notify("11.60 wake arguments failed exact readback\n");
+      return 0;
+    }
+  }
 
   return args_cave;
 }

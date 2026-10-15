@@ -765,3 +765,18 @@ offset_list off_0761 = {
     .PS5_WIFI_FW_OFFSET = (0xFFFFFFFF81655800 - KERNEL_TEXT),
     .PS5_WIFI_FW_SIZE = 497636,
 };
+
+/*
+ * Exact retail 11.60 values used by the bounded wake-page staging build.
+ * Only fields consumed by setup, the public 0x98-byte wake ABI, and the
+ * PID-1 page-table installer are populated.  Zero is intentional elsewhere.
+ */
+offset_list off_1160 = {
+    .VMSPACE_VM_PMAP = 0x1D8,
+    .FUN_PRINTF = 0x535A50,
+    .FUN_SMP_RENDEZVOUS = 0xB739D0,
+    .FUN_SMP_NO_RENDEVOUS_BARRIER = 0x316318,
+    .HV_CODE_CAVE_PA = 0x6284AC20,
+    .HV_HANDLE_VMEXIT_PA = 0x62847551,
+    .KERNEL_CFI_CHECK = 0x4EBEB0,
+};
