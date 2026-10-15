@@ -1,10 +1,14 @@
 .PHONY: all clean wake-1160
 
-ifndef PS5_PAYLOAD_SDK
-    PS5_PAYLOAD_SDK = /opt/ps5-payload-sdk/
-endif
+# The exact standalone wake-1160 goal has no SDK inputs. Default, ordinary,
+# and mixed-goal builds retain the existing SDK include and behavior.
+ifneq ($(MAKECMDGOALS),wake-1160)
+    ifndef PS5_PAYLOAD_SDK
+        PS5_PAYLOAD_SDK = /opt/ps5-payload-sdk/
+    endif
 
-include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
+    include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
+endif
 
 BIN := bin/ps5-linux-loader.elf
 SRC := $(wildcard source/*.c)
