@@ -1,4 +1,4 @@
-.PHONY: all clean
+.PHONY: all clean wake-1160
 
 ifndef PS5_PAYLOAD_SDK
     PS5_PAYLOAD_SDK = /opt/ps5-payload-sdk/
@@ -18,6 +18,10 @@ SC_HV_H := shellcode_hv/shellcode_hv.h
 SC_K_H  := shellcode_kernel/shellcode_kernel.h
 
 all: $(SC_0607_H) $(SC_HV_H) $(SC_K_H) $(BIN)
+
+# Opt-in inert 11.60 wake blob. This is deliberately not part of `all`.
+wake-1160:
+	$(MAKE) -C shellcode_kernel_1160 check
 
 $(SC_0607_H):
 	$(MAKE) -C shellcode_0607
@@ -40,3 +44,4 @@ clean:
 	$(MAKE) -C shellcode_0607 clean
 	$(MAKE) -C shellcode_hv clean
 	$(MAKE) -C shellcode_kernel clean
+	$(MAKE) -C shellcode_kernel_1160 clean

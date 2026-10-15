@@ -25,3 +25,19 @@ resume path and every required firmware-specific input are available.
 
 The 13.xx-only display-operation concepts observed in Sonic's binary are not
 part of this candidate.
+
+## Dedicated inert wake blob
+
+`make wake-1160` builds and checks a separate exact-11.60 blob under
+`shellcode_kernel_1160/`. It is not a prerequisite of the ordinary
+multi-firmware `all` target and does not change that target's linked inputs.
+
+The dedicated blob links only its 11.60 entry and the inline argument
+validator. It does not link the legacy HV defeat, Linux boot, UART, VBIOS,
+transmitter, MP3, printf, SMP, or vmmcall sources. Its entry validates the
+0x98 ABI block and returns; it cannot arm resume or Linux.
+
+The dedicated linker script gives its sole load segment RX permissions and
+rejects shell code larger than 0x4000 bytes. The `check` target independently
+checks the binary size, unique argument marker, absence of relocations,
+absence of forbidden legacy/display symbols, and RX-without-W permissions.
