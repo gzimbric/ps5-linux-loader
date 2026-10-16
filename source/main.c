@@ -8,9 +8,32 @@
 #include "loader.h"
 #include "prepare_resume.h"
 #include "utils.h"
+#if FW_1160_PORT
+#include <stdio.h>
+#endif
 #include <unistd.h>
 
 #define PS5_PRO_SOC_ID 0x840fd0
+
+#if FW_1160_PORT
+static void checkpoint_1160_main(const char *stage) {
+  if (fw != 0x1160)
+    return;
+  printf("11.60 checkpoint: main: %s\n", stage);
+  fflush(stdout);
+}
+
+[[noreturn]] static void hold_1160_after_staging_failure(const char *stage) {
+  printf("11.60 checkpoint: main: %s failed; retaining all backing until "
+         "cold reboot\n",
+         stage);
+  fflush(stdout);
+  notify("11.60 stopped after Linux staging. Cold reboot required; do not "
+         "retry this boot.\n");
+  while (1)
+    sleep(30);
+}
+#endif
 
 int main(void) {
 #if STAGE2A_1160 || FW_1160_PORT
@@ -57,21 +80,50 @@ int main(void) {
     sleep(30);
 #else
 
+#if FW_1160_PORT
+  checkpoint_1160_main("fetch_linux call");
+  int fetch_linux_result = fetch_linux(&linux_i);
+  printf("11.60 checkpoint: main: fetch_linux returned %d\n",
+         fetch_linux_result);
+  fflush(stdout);
+  if (fetch_linux_result) {
+#else
   if (fetch_linux(&linux_i)) {
+#endif
     notify("Something went wrong while installing linux files.\n");
     return -1;
   }
 
   void *shellcode_kernel;
   size_t shellcode_kernel_len;
+#if FW_1160_PORT
+  checkpoint_1160_main("prepare_resume call");
+  int prepare_resume_result =
+      prepare_resume(&shellcode_kernel, &shellcode_kernel_len);
+  printf("11.60 checkpoint: main: prepare_resume returned %d\n",
+         prepare_resume_result);
+  fflush(stdout);
+  if (prepare_resume_result) {
+#else
   if (prepare_resume(&shellcode_kernel, &shellcode_kernel_len)) {
+#endif
     notify("Something went wrong while preparing resume.\n");
+#if FW_1160_PORT
+    hold_1160_after_staging_failure("prepare_resume");
+#else
     return -1;
+#endif
   }
 
 #if FW_1160_PORT
   if (fw == 0x1160) {
-    if (hv_defeat_1160(shellcode_kernel, shellcode_kernel_len))
+    checkpoint_1160_main("hv_defeat_1160 call");
+    int hv_defeat_result =
+        hv_defeat_1160(shellcode_kernel, shellcode_kernel_len);
+    printf("11.60 checkpoint: main: hv_defeat_1160 returned %d\n",
+           hv_defeat_result);
+    fflush(stdout);
+    if (hv_defeat_result)
       goto err;
   } else {
     goto err;
@@ -107,6 +159,10 @@ int main(void) {
 err:
   notify("Something went wrong while defeating Hypervisor.\nPlease make sure "
          "your fw is supported.");
+#if FW_1160_PORT
+  hold_1160_after_staging_failure("hv_defeat_1160");
+#else
   return -1;
+#endif
 #endif
 }

