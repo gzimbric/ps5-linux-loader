@@ -5,7 +5,7 @@ READELF = x86_64-elf-readelf
 
 PS5_1160_DIAG_PRE_STAGE ?= 5
 PS5_1160_DIAG_OP_LIMIT ?= 29
-PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 1
+PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 0
 
 CFLAGS := -Os -fomit-frame-pointer -fno-stack-protector -ffreestanding \
 	-nostdlib -fPIE -fno-plt -fcf-protection=none -mno-sse -mno-sse2 -m64 \

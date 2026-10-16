@@ -32,7 +32,7 @@ diagnostic_build = diag_mode_text == "1"
 if diagnostic_build:
     diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE", "5")
     diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT", "29")
-    diag_clear_text = os.environ.get("PS5_1160_DIAG_CLEAR_MP3_BUFFERS", "1")
+    diag_clear_text = os.environ.get("PS5_1160_DIAG_CLEAR_MP3_BUFFERS", "0")
     diag_pre_stage = int(diag_pre_text, 0)
     diag_op_limit = int(diag_op_text, 0)
     diag_clear_mp3_buffers = int(diag_clear_text, 0)
@@ -298,8 +298,20 @@ assert "VALIDATED_INITRD_SIZE_1160 54376639ULL" in loader_source
 # live in the checked, retained tail of the linux_info page so the exact
 # hardware-proven 0x5000 executable cave is not moved.
 assert "SHELLCODE_1160_HEADLESS" not in wake_makefile
-assert "PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 1" in wake_makefile
+assert "PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 0" in wake_makefile
 assert "-DPS5_1160_DIAG_CLEAR_MP3_BUFFERS=" in wake_makefile
+
+# Match the static Sonic layout exactly inside the retained 0x4000-byte page:
+# rsp[1282] at +0x1000, an 0x18-byte gap, then req[1281] at +0x2420.
+mp3_rsp_offset = 0x1000
+mp3_rsp_size = 1282 * 4
+mp3_req_offset = 0x2420
+mp3_req_size = 1281 * 4
+assert 0xC38 <= mp3_rsp_offset
+assert mp3_rsp_offset + mp3_rsp_size == 0x2408
+assert mp3_rsp_offset + mp3_rsp_size + 0x18 == mp3_req_offset
+assert mp3_req_offset + mp3_req_size == 0x3824
+assert mp3_req_offset + mp3_req_size <= 0x4000
 for required in (
     "memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000)",
     "dp_enable_link_phy(4, 30)",
@@ -308,13 +320,15 @@ for required in (
     "mp3_initialize(0)",
     "mp3_set_hdcp_packet(0, 1)",
     "mp3_enable_output(0, 1)",
-    "MP3_REQ_OFFSET 0x1000ULL",
-    "MP3_RSP_OFFSET 0x2420ULL",
+    "MP3_RSP_OFFSET 0x1000ULL",
+    "MP3_REQ_OFFSET 0x2420ULL",
+    "MP3_RSP_WORDS * sizeof(int) + 0x18ULL ==",
     "Sonic MP3 buffers must remain 32-byte aligned",
     "args.linux_info_va + MP3_REQ_OFFSET",
     "args.linux_info_va + MP3_RSP_OFFSET",
 ):
     assert required in boot_linux_source, required
+assert "#if !SHELLCODE_1160_ONLY\n    clear_mp3_buffers();\n#endif" in boot_linux_source
 assert u32(349999999) in wake
 display_order = (
     "boot_linux();",
@@ -462,38 +476,57 @@ if diagnostic_build:
     assert clear_bypass
     assert clear_bypass.group(1) == clear_bypass.group(2)
 
-display_dispatch = re.search(
+display_loop = re.search(
     r"<run_ps5_display_ops_1160>:\n(.*?)(?=\n[0-9a-f]+ <[^>]+>:)",
     wake_disassembly,
     re.DOTALL,
 )
-assert display_dispatch
-display_dispatch_body = display_dispatch.group(1)
-assert re.search(r"\bmov\s+edi,DWORD PTR \[rbx\+0x8\]", display_dispatch_body)
-assert re.search(r"\bcmp\s+DWORD PTR \[rbx\+0xc\],0x2", display_dispatch_body)
-assert re.search(r"\bmov\s+rsi,QWORD PTR \[rbx\+0x10\]", display_dispatch_body)
-assert re.search(
-    r"\badd\s+r12,QWORD PTR \[rax\+0x8\]", display_dispatch_body
+assert display_loop
+display_loop_body = display_loop.group(1)
+display_leaf = re.search(
+    r"<dispatch_ps5_display_op_1160(?:\.[^>]*)?>:\n"
+    r"(.*?)(?=\n[0-9a-f]+ <[^>]+>:)",
+    wake_disassembly,
+    re.DOTALL,
 )
-assert len(re.findall(r"\bcall\s+r12\b", display_dispatch_body)) == 2
+assert display_leaf
+display_leaf_body = display_leaf.group(1)
+leaf_bound = instruction_position(display_leaf_body, r"\bcmp\s+edi,0x1c")
+leaf_arg1 = instruction_position(
+    display_leaf_body, r"\bmov\s+edi,DWORD PTR \[[^\]]+\+0x8\]"
+)
+leaf_mode = instruction_position(
+    display_leaf_body, r"\bcmp\s+DWORD PTR \[[^\]]+\+0xc\],0x2"
+)
+leaf_arg2 = instruction_position(
+    display_leaf_body, r"\bmov\s+rsi,QWORD PTR \[[^\]]+\+0x10\]"
+)
+assert leaf_bound < leaf_arg1 < leaf_mode < leaf_arg2
+assert not re.search(r"\b(?:push|call)\b|\bsub\s+rsp,", display_leaf_body)
+assert not re.search(r"\bcall\b", display_leaf_body)
+assert len(re.findall(r"\bjmp\s+(?:QWORD PTR \[[^\]]+\]|r[a-z0-9]+)\b", display_leaf_body)) == 2
+leaf_call_pattern = (
+    r"\bcall\s+[0-9a-f]+\s+"
+    r"<dispatch_ps5_display_op_1160(?:\.[^>]*)?>"
+)
+assert len(re.findall(leaf_call_pattern, display_loop_body)) == 1
 if diagnostic_build:
-    limit_load = instruction_position(
-        display_dispatch_body, r"<ps5_diag_display_op_limit_1160>"
-    )
     limit_compare = instruction_position(
-        display_dispatch_body, r"\bcmp\s+ebp,r14d", limit_load + 1
+        display_loop_body,
+        r"\bcmp\s+[a-z0-9]+,DWORD PTR \[[^\]]+\].*"
+        r"<ps5_diag_display_op_limit_1160>",
     )
     conditional_exit = instruction_position(
-        display_dispatch_body,
-        r"\bje\s+[0-9a-f]+\s+<run_ps5_display_ops_1160\+",
+        display_loop_body,
+        r"\bjae\s+[0-9a-f]+\s+<run_ps5_display_ops_1160\+",
         limit_compare + 1,
     )
-    first_indirect_call = instruction_position(
-        display_dispatch_body, r"\bcall\s+(?:QWORD PTR \[[^\]]+\]|r12)"
+    leaf_call = instruction_position(
+        display_loop_body, leaf_call_pattern
     )
-    assert limit_load < limit_compare < conditional_exit < first_indirect_call
+    assert limit_compare < conditional_exit < leaf_call
 else:
-    assert re.search(r"\bcmp\s+ebp,0x1d", display_dispatch_body)
+    assert re.search(r"\bcmp\s+[a-z0-9]+,0x1d", display_loop_body)
 patch_hv_disassembly = re.search(
     r"<patch_hv>:\n(.*?)(?=\n[0-9a-f]+ <boot_linux>:)",
     wake_disassembly,

@@ -65,22 +65,40 @@ volatile const uint32_t ps5_diag_display_op_limit_1160 =
 typedef uint64_t (*display_op1_fn)(uint32_t);
 typedef uint64_t (*display_op2_fn)(uint32_t, uint64_t);
 
+/*
+ * Keep Sonic's two-layer call shape: the outer loop CALLs this leaf, then the
+ * leaf tail-JMPs to the selected kernel target.  The target's RET therefore
+ * returns directly to the outer loop's post-operation checkpoint.
+ */
+__attribute__((noinline)) static uint64_t
+dispatch_ps5_display_op_1160(uint32_t index) {
+  if (index >= 29)
+    return 0;
+
+  const ps5_display_op_1160 *op = &ps5_display_ops_1160[index];
+  const uintptr_t target = args.ktext + op->ktext_offset;
+
+  if (op->mode == 2)
+    return ((display_op2_fn)target)(op->arg1_edi, op->arg2_rsi);
+  return ((display_op1_fn)target)(op->arg1_edi);
+}
+
 void run_ps5_display_ops_1160(void) {
+  uint32_t completed = 0;
+
+  for (;;) {
 #if SHELLCODE_1160_DIAGNOSTIC
-  const uint32_t limit = ps5_diag_display_op_limit_1160;
+    const uint32_t limit = ps5_diag_display_op_limit_1160;
 #else
-  const uint32_t limit = 29;
+    const uint32_t limit = 29;
 #endif
 
-  for (uint32_t i = 0; i < limit; i++) {
-    const ps5_display_op_1160 *op = &ps5_display_ops_1160[i];
-    const uintptr_t target = args.ktext + op->ktext_offset;
+    if (completed >= limit)
+      break;
 
-    printf("11.60 display op %u starting\n", i + 1);
-    if (op->mode == 2)
-      ((display_op2_fn)target)(op->arg1_edi, op->arg2_rsi);
-    else
-      ((display_op1_fn)target)(op->arg1_edi);
-    printf("11.60 display op %u returned\n", i + 1);
+    const uint32_t index = completed++;
+    printf("11.60 display op %u starting\n", index + 1);
+    dispatch_ps5_display_op_1160(index);
+    printf("11.60 display op %u returned\n", index + 1);
   }
 }

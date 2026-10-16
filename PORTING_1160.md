@@ -63,11 +63,17 @@ automated for every candidate.
   The operation table is dump-pinned by function hashes and checked byte for
   byte in the final wake ELF.
 - The compact 11.60 build reuses the otherwise-free tail of the aligned
-  `linux_info_va` page for the MP3 request/response work buffers. The buffers
-  begin at offsets `0x1000` and `0x2420`, are both 32-byte aligned like
-  Sonic's buffers, end at `0x3828`, and therefore do
+  `linux_info_va` page for the MP3 response/request work buffers. Matching
+  Sonic's observed layout, the 0x1408-byte response buffer begins at `0x1000`,
+  an 0x18-byte gap follows, and the 0x1404-byte request buffer begins at
+  `0x2420`. Both are 32-byte aligned, end at `0x3824`, and therefore do
   not overlap the 0xc38-byte Linux information structure or exceed its
   0x4000-byte page.
+- The retained page is zeroed before suspend, matching Sonic's zero-filled
+  static storage. The 11.60 production path therefore performs no wake-time
+  MP3 buffer clear; diagnostic builds can explicitly set
+  `PS5_1160_DIAG_CLEAR_MP3_BUFFERS=1` only to reproduce the failing Run 13
+  write pattern. Legacy firmware builds retain their original clear.
 - Sonic's inner-HV UART-enable operation and reserved E820 range
   `[0x980000000, 0xa00000000)` are retained.
 

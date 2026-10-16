@@ -74,7 +74,7 @@ static struct linux_info info;
 #define PS5_1160_DIAG_PRE_STAGE 5
 #endif
 #ifndef PS5_1160_DIAG_CLEAR_MP3_BUFFERS
-#define PS5_1160_DIAG_CLEAR_MP3_BUFFERS 1
+#define PS5_1160_DIAG_CLEAR_MP3_BUFFERS 0
 #endif
 _Static_assert(PS5_1160_DIAG_PRE_STAGE >= 0 &&
                    PS5_1160_DIAG_PRE_STAGE <= 5,
@@ -91,8 +91,8 @@ volatile const uint32_t ps5_diag_clear_mp3_buffers_1160 =
 #define MP3_REQ_WORDS 1281ULL
 #define MP3_RSP_WORDS 1282ULL
 #if SHELLCODE_1160_ONLY
-#define MP3_REQ_OFFSET 0x1000ULL
-#define MP3_RSP_OFFSET 0x2420ULL
+#define MP3_RSP_OFFSET 0x1000ULL
+#define MP3_REQ_OFFSET 0x2420ULL
 
 /*
  * Sonic keeps these two MP3 IPC buffers in the wake blob's zero-filled data.
@@ -100,15 +100,18 @@ volatile const uint32_t ps5_diag_clear_mp3_buffers_1160 =
  * same 0x280c bytes would make the otherwise identical display-enabled blob
  * 792 bytes too large.  The checked linux_info alias owns one complete 0x4000
  * page; linux_info occupies 0xc38 bytes, leaving a disjoint, retained tail for
- * the exact same request/response buffers without moving the proven cave.
+ * the exact same buffers without moving the proven cave.  Preserve Sonic's
+ * observed layout: the 0x1408-byte response buffer first, an 0x18-byte gap,
+ * then the 0x1404-byte request buffer.
  */
-_Static_assert(sizeof(struct linux_info) <= MP3_REQ_OFFSET,
-               "linux_info overlaps MP3 request buffer");
+_Static_assert(sizeof(struct linux_info) <= MP3_RSP_OFFSET,
+               "linux_info overlaps MP3 response buffer");
 _Static_assert((MP3_REQ_OFFSET & 31) == 0 && (MP3_RSP_OFFSET & 31) == 0,
                "Sonic MP3 buffers must remain 32-byte aligned");
-_Static_assert(MP3_REQ_OFFSET + MP3_REQ_WORDS * sizeof(int) <= MP3_RSP_OFFSET,
-               "MP3 request and response buffers overlap");
-_Static_assert(MP3_RSP_OFFSET + MP3_RSP_WORDS * sizeof(int) <= PAGE_SIZE,
+_Static_assert(MP3_RSP_OFFSET + MP3_RSP_WORDS * sizeof(int) + 0x18ULL ==
+                   MP3_REQ_OFFSET,
+               "Sonic MP3 response/request gap changed");
+_Static_assert(MP3_REQ_OFFSET + MP3_REQ_WORDS * sizeof(int) <= PAGE_SIZE,
                "MP3 buffers exceed the retained linux_info page");
 
 static int *mp3_req_buffer(void) {
@@ -305,7 +308,9 @@ void boot_linux(void) {
 
   // Initialize hdcp in mp3.
   if (mp3_initialize != NULL && mp3_invoke != NULL) {
+#if !SHELLCODE_1160_ONLY
     clear_mp3_buffers();
+#endif
     mp3_initialize(0);
     mp3_set_hdcp_packet(0, 1);
     mp3_enable_output(0, 1);
