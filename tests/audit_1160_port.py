@@ -18,6 +18,7 @@ WAKE_ELF = ROOT / "shellcode_kernel_port_1160/shellcode_kernel_port_1160.elf"
 INNER_HV_ELF = ROOT / "shellcode_hv_port_1160/shellcode_hv_port_1160.elf"
 LOADER = ROOT / "source/loader.c"
 STAGING = ROOT / "source/loader_staging_1160.c"
+HV_DEFEAT = ROOT / "source/hv_defeat_1160.c"
 
 
 def u32(value: int) -> bytes:
@@ -187,6 +188,7 @@ for marker in (
 
 loader_source = LOADER.read_text()
 staging_source = STAGING.read_text()
+hv_defeat_source = HV_DEFEAT.read_text()
 assert loader_source.count("stage_linux_aliases_1160(") == 1
 for required in (
     "get_proc_pmap_checked",
@@ -203,6 +205,17 @@ for required in (
 assert "mlock(" not in staging_source
 assert "VALIDATED_BZIMAGE_SIZE_1160 12702720ULL" in loader_source
 assert "VALIDATED_INITRD_SIZE_1160 28777476ULL" in loader_source
+
+# Firmware 11.60 XOM remains NPT-enforced until the startup-AP strike.  A live
+# ktext content read before that strike hard-freezes the console even after the
+# guest XO bit is cleared.  Preserve Sonic's ordering: metadata/PTE validation
+# now, copy into the cave only after NPT is disabled during resume.
+assert "page-table-only wake-cave validation passed" in hv_defeat_source
+validate_wake_cave_source = hv_defeat_source.split(
+    "static int validate_wake_cave", 1
+)[1].split("static uint64_t tss_ist_slot", 1)[0]
+for forbidden_read in ("kread(", "kread64(", "kernel_copyout(", "pa_to_dmap("):
+    assert forbidden_read not in validate_wake_cave_source, forbidden_read
 
 # Sonic's two high-firmware inner-HV deltas: reserved E820 start and direct
 # UART enable.  Check operand constants rather than compiler register choice.

