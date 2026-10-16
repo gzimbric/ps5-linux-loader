@@ -1,6 +1,8 @@
 #include "main.h"
 #include "boot_linux.h"
+#if !SHELLCODE_1160_ONLY
 #include "hv_defeat_0304.h"
+#endif
 #include "shellcode_kernel_args_validate.h"
 #include "utils.h"
 #include <stddef.h>
@@ -21,16 +23,20 @@ __attribute__((section(".entry_point"))) uint32_t main(uint64_t add1,
   // "Hide" the pointer from the optimizer
   __asm__ volatile("" : "+r"(args_ptr));
 
-  /*
-   * Exact 11.60 source candidate only.  Validation must dominate every
-   * mutation, and this branch intentionally does not arm the public Linux
-   * boot path until the remaining 11.60 offsets and resume path are proven.
-   */
-  if (args_ptr->fw_version == PS5_FW_1160) {
-    if (validate_shellcode_kernel_args_1160(args_ptr) != 0)
-      return -1;
-    return 0;
-  }
+#if SHELLCODE_1160_ONLY
+  /* 11.60 arrives here only after the startup-AP payload disabled NPT. */
+  if (validate_shellcode_kernel_args_1160(args_ptr) != 0)
+    return -1;
+  activate_uart(args_ptr);
+  init_global_pointers(args_ptr);
+  *(uint8_t *)args_ptr->kernel_cfi_check = 0xC3;
+  boot_linux();
+  printf("Linux prepared OK\n");
+  printf("Good Bye VM :)\n");
+  smp_rendezvous(smp_no_rendevous_barrier, vmmcall_dummy,
+                 smp_no_rendevous_barrier, NULL);
+  return 0;
+#else
 
   // We don't have required information - Abort
   if ((args_ptr->fun_printf & 0xFFFF) == 0) {
@@ -64,4 +70,5 @@ __attribute__((section(".entry_point"))) uint32_t main(uint64_t add1,
 
   printf("We shouldn't be here :(\n");
   return 0;
+#endif
 }

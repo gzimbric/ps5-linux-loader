@@ -767,16 +767,43 @@ offset_list off_0761 = {
 };
 
 /*
- * Exact retail 11.60 values used by the bounded wake-page staging build.
- * Only fields consumed by setup, the public 0x98-byte wake ABI, and the
- * PID-1 page-table installer are populated.  Zero is intentional elsewhere.
+ * Exact retail 11.60 values.  The startup-AP carrier and gadget set are the
+ * hardware-proven Byepervisor 11.60 donor.  ACPIGBL_FACS was ported by
+ * matching both of its 13.60 references against the 11.60 kernel dump.
+ * KERNEL_CODE_CAVE is the five-page NOP tail that has live execution proof.
  */
 offset_list off_1160 = {
+    .VMSPACE_VM_VMID = 0x1E4,
     .VMSPACE_VM_PMAP = 0x1D8,
+    .ACPIGBL_FACS = 0x39CD1F0,
+    .IDT = 0x3BA0300,
+    .COMMON_TSS = 0x3BA2FE0,
+    .FUN_MEMCPY = 0x2E7E40,
+    .GAD_IRETQ = 0x2AC22D,
+    .GAD_POP_RAX_RET = 0x338D2A,
+    .GAD_POP_RDI_RET = 0x289E0A,
+    .GAD_POP_RSI_RET = 0x8AAFB5,
+    .GAD_POP_RDX_RET = 0x3476DB,
+    .GAD_POP_RCX_RET = 0x339712,
+    .GAD_POP_RSP_RET = 0x33974D,
+    .HOOK_ACPI_WAKEUP_MACHDEP = 0x42FB40,
+    .KERNEL_CODE_CAVE = 0xD2B000,
     .FUN_PRINTF = 0x535A50,
     .FUN_SMP_RENDEZVOUS = 0xB739D0,
     .FUN_SMP_NO_RENDEVOUS_BARRIER = 0x316318,
     .HV_CODE_CAVE_PA = 0x6284AC20,
     .HV_HANDLE_VMEXIT_PA = 0x62847551,
     .KERNEL_CFI_CHECK = 0x4EBEB0,
+    .HV_MP_STARTUP_CALL = 0xC885D0,
+    .MP_STARTUP_INIT_VECTOR = 0x3110B8,
+    .RESUME_DATA_CAVE = 0x2D02000,
+    .GAD_PIVOT_ADD_RSP28_RET = 0x2A0EDE,
+    .GAD_STORE_RDI8_RCX = 0x3CC4AF,
+    .GAD_SET_DR7 = 0xA7BD86,
+    .GAD_ST_RCX_RAX = 0x3620BF,
+    .GAD_MOV_RAX_RDI = 0xC5E5DA,
+    .GAD_REP_MOVSB = 0x304367,
+    .GAD_CLD = 0x462C1A,
+    .GAD_RET_TRAMP = 0x338D2B,
+    .GAD_DBREG_RESUME = 0x2A5778,
 };

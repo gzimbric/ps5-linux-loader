@@ -1,7 +1,13 @@
 #include "boot_linux.h"
 #include "../include/config.h"
 #include "../include/linux.h"
+#if SHELLCODE_1160_ONLY
+#include "../shellcode_hv_port_1160/shellcode_hv_port_1160.h"
+#define shellcode_hv_bin shellcode_hv_port_1160_bin
+#define shellcode_hv_bin_len shellcode_hv_port_1160_bin_len
+#else
 #include "../shellcode_hv/shellcode_hv.h"
+#endif
 #include "utils.h"
 
 #define DIG1TRANSMITTERCONTROL 0x4c
@@ -42,6 +48,7 @@ typedef struct {
   uint32_t lane_setting_2;
 } transmitter_args;
 
+#if !SHELLCODE_1160_HEADLESS
 struct dig_transmitter_control_parameters_v1_6 {
   uint8_t phyid;
   uint8_t action;
@@ -57,10 +64,13 @@ struct dig_transmitter_control_parameters_v1_6 {
   uint8_t reserved;
   uint32_t reserved1;
 };
+#endif
 
 static struct linux_info info;
 
+#if !SHELLCODE_1160_HEADLESS
 static int mp3_req[1281], mp3_rsp[1282];
+#endif
 
 static inline void stac(void) { __asm__ volatile("stac" : : : "cc"); }
 
@@ -76,6 +86,7 @@ static inline uint64_t vmmcall(uint64_t nr, uint64_t a0, uint64_t a1,
   return ret;
 }
 
+#if !SHELLCODE_1160_HEADLESS
 static uint64_t get_hv_shm(void) {
   if (args.fw_version >= 0x0500 && args.fw_version < 0x0600) {
     return 0x62a01000;
@@ -110,6 +121,7 @@ static int mp3_enable_output(int be, int mode) {
   mp3_req[1] = mode;
   return mp3_invoke(22, mp3_req, mp3_rsp);
 }
+#endif
 
 static void install_hv_code(void) {
   // Install identity map for HV
@@ -174,6 +186,7 @@ void boot_linux(void) {
   // Common bootloader code
   install_hv_code();
 
+#if !SHELLCODE_1160_HEADLESS
   if (g_vbios != 0)
     memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000);
 
@@ -187,11 +200,13 @@ void boot_linux(void) {
     mp3_set_hdcp_packet(0, 1);
     mp3_enable_output(0, 1);
   }
+#endif
 
   // Copy bzImage and initrd into contiguous memory.
   memcpy(&info, (void *)args.linux_info_va, sizeof(struct linux_info));
 
   info.n_tmrs = 0;
+#if !SHELLCODE_1160_HEADLESS
   if (args.fw_version >= 0x0500 && args.fw_version < 0x0800) {
     SceSblHvShm *shm = (SceSblHvShm *)PHYS_TO_DMAP(get_hv_shm());
 
@@ -204,6 +219,7 @@ void boot_linux(void) {
       }
     }
   }
+#endif
 
   uintptr_t bzimage = info.bzimage;
   uintptr_t initrd = info.initrd;

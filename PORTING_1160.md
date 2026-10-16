@@ -1,43 +1,82 @@
-# Firmware 11.60 wake-source candidate
+# Firmware 11.60 Sonic-style Linux port
 
-This branch is a source-level comparison candidate for porting the public
-PS5 Linux wake blob to firmware 11.60. It is intentionally **not** a payload
-to send to a console.
+This branch adds a dedicated `linux-1160` build. It preserves the public
+`ps5-linux-loader` flow and substitutes exact 11.60 inputs at the same seam
+used by Sonic's known-working 13.60 ELF:
 
-The pinned public source has no 13.xx outer hypervisor/resume dispatcher. Its
-top-level path only supports firmware below 8.00. Consequently, this branch
-does not invent an 11.60 outer path or import the older custom pLinux path.
-It limits the port to behavior that can be expressed safely in the public
-wake-source ABI:
+1. fetch `bzImage` and `initrd.img`;
+2. publish the public 0x98-byte wake argument block;
+3. map the position-independent wake blob at the existing fixed alias;
+4. use the hardware-proven 11.60 startup-AP carrier to disable nested paging;
+5. corrupt `AcpiGbl_FACS` so resume reaches the #GP/#SX copy-and-transfer
+   chain;
+6. copy the wake blob into the verified 11.60 executable ktext cave;
+7. patch VMEXIT, stage Linux at Sonic's established physical addresses, and
+   rendezvous all CPUs into `vmmcall(1)`.
 
-- preserve the public `shellcode_kernel_args` layout at exactly 0x98 bytes;
-- recognize exactly firmware `0x1160` in the embedded wake entry;
-- validate all mutation-critical 11.60 arguments before doing anything;
-- return without UART, CFI, hypervisor, display, or Linux mutations;
-- preserve unknown optional offsets as NULL;
-- make UART, VBIOS, transmitter, and MP3 operations optional for a future
-  headless path.
+The result is an exact-11.60 regular-model candidate, not a claim of a
+completed hardware boot test. Static, build, byte-provenance, and
+position-independence checks are automated; final confirmation still requires
+a retail 11.60 console.
 
-No 11.60 offsets are added here. In particular, no values have been copied
-from unverified comments or inferred from another firmware. The exact 11.60
-branch remains deliberately non-arming until a separately audited outer
-resume path and every required firmware-specific input are available.
+## Deliberate 11.60 substitutions
 
-The 13.xx-only display-operation concepts observed in Sonic's binary are not
-part of this candidate.
+- The raw firmware gate is exactly `0x11600005`; other revisions fail before
+  setup or mutation.
+- The startup-AP payload is the byte-identical hardware-proven 11.60 donor:
+  1,158 bytes, SHA-256
+  `918ac3d8ccc16ec31e40fc069cf5ba46b168afd493acb12461adc8f96c7ee997`.
+- PS5 Pro is refused before setup because that donor's physical HV layout was
+  proven only on regular PS5 hardware.
+- `AcpiGbl_FACS` is `ktext + 0x39cd1f0` and `memcpy` is
+  `ktext + 0x2e7e40`.
+- The wake destination is the live-tested executable NOP range
+  `[ktext+0xd2b000, ktext+0xd30000)`. The dedicated wake blob must remain at
+  or below `0x5000` bytes.
+- Sonic's optional UART breadcrumb writes are omitted because their accidental
+  `or dword ptr [rcx], eax ; ret` gadget has no 11.60 equivalent. The essential
+  `memcpy` and final transfer sequence is unchanged.
+- The 11.60 wake build is headless: unknown 11.60 VBIOS, transmitter, MP3, and
+  shared-memory addresses remain NULL and are never dereferenced. UART output
+  from the inner bare-metal stage remains enabled.
+- Sonic's inner-HV UART-enable operation and reserved E820 range
+  `[0x980000000, 0xa00000000)` are retained.
 
-## Dedicated inert wake blob
+## Build and audit
 
-`make wake-1160` builds and checks a separate exact-11.60 blob under
-`shellcode_kernel_1160/`. It is not a prerequisite of the ordinary
-multi-firmware `all` target and does not change that target's linked inputs.
+The PS5 payload SDK and an x86-64 ELF cross-toolchain are required. On the
+macOS toolchain used for the release candidate:
 
-The dedicated blob links only its 11.60 entry and the inline argument
-validator. It does not link the legacy HV defeat, Linux boot, UART, VBIOS,
-transmitter, MP3, printf, SMP, or vmmcall sources. Its entry validates the
-0x98 ABI block and returns; it cannot arm resume or Linux.
+```sh
+PATH=/opt/homebrew/opt/llvm/bin:$PATH \
+make linux-1160-check \
+  PS5_PAYLOAD_SDK=/absolute/path/to/ps5-payload-sdk
+```
 
-The dedicated linker script gives its sole load segment RX permissions and
-rejects shell code larger than 0x4000 bytes. The `check` target independently
-checks the binary size, unique argument marker, absence of relocations,
-absence of forbidden legacy/display symbols, and RX-without-W permissions.
+The output is `bin/ps5-linux-loader-1160.elf`.
+
+`linux-1160-check` fails unless all of the following hold:
+
+- the exact startup-AP donor hash and size match;
+- the wake blob fits the five-page 11.60 cave;
+- the wake and inner-HV raw payload ELFs are PIE (`ET_DYN`) with no relocation
+  entries or linked-VMA immediates;
+- each raw `.shell_code` begins at `main` and embeds correctly;
+- the public wake ABI remains exactly 0x98 bytes;
+- the exact 11.60 offsets are present and selected 13.60 offsets are absent;
+- Sonic's two required inner-HV deltas are encoded;
+- the final payload contains exactly one wake blob and one AP donor blob.
+
+## Hardware test boundary
+
+Use only on an exact retail 11.60 regular PS5, with the same USB Linux files
+and rest-mode procedure documented by upstream. This candidate mutates
+IDT/TSS/FACS state and the hypervisor path. If it refuses because carrier state
+is stale, cold reboot; do not retry it in the same GameOS boot.
+
+Because display firmware offsets are intentionally unknown, first testing
+should be treated as UART/headless. A black screen alone does not distinguish
+a failed Linux transition from a successful headless boot.
+
+The older `wake-1160` and `stage2a-1160-check` targets remain available as
+non-arming staging diagnostics. They are not the full port.

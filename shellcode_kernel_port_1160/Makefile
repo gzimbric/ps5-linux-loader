@@ -1,0 +1,49 @@
+CC      = x86_64-elf-gcc
+OBJCOPY = x86_64-elf-objcopy
+NM      = x86_64-elf-nm
+READELF = x86_64-elf-readelf
+
+CFLAGS := -Os -fomit-frame-pointer -fno-stack-protector -ffreestanding \
+	-nostdlib -fPIE -fno-plt -fcf-protection=none -mno-sse -mno-sse2 -m64 \
+	-ffunction-sections -fdata-sections -DSHELLCODE_1160_ONLY=1 \
+	-DSHELLCODE_1160_HEADLESS=1 -I../shellcode_kernel -I../include
+LDFLAGS := -pie -T linker.ld -Wl,--gc-sections
+
+TARGET   := shellcode_kernel_port_1160.elf
+TEXT_BIN := shellcode_kernel_port_1160.bin
+DUMP     := shellcode_kernel_port_1160.h
+OBJ      := main.o boot_linux.o utils.o
+
+.PHONY: all check clean
+
+all: $(DUMP)
+
+main.o: ../shellcode_kernel/main.c ../shellcode_kernel/main.h \
+	../shellcode_kernel/shellcode_kernel_args_validate.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+boot_linux.o: ../shellcode_kernel/boot_linux.c \
+	../shellcode_hv_port_1160/shellcode_hv_port_1160.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+utils.o: ../shellcode_kernel/utils.c ../shellcode_kernel/utils.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET): $(OBJ) linker.ld
+	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJ) -o $@
+
+$(TEXT_BIN): $(TARGET)
+	$(OBJCOPY) -O binary -j .shell_code $< $@
+
+$(DUMP): $(TEXT_BIN)
+	xxd -i -n shellcode_kernel_port_1160_bin $(TEXT_BIN) > $(DUMP)
+
+check: $(DUMP)
+	@test "$$(wc -c < $(TEXT_BIN) | tr -d ' ')" -le 20480
+	@python3 -c 'from pathlib import Path; p=Path("$(TEXT_BIN)").read_bytes(); assert p.count(bytes.fromhex("aa11aa11aa11aa11")) == 1'
+	@$(READELF) -h $(TARGET) | grep -Eq 'Type:[[:space:]]+DYN'
+	@$(READELF) -r $(TARGET) | grep -q 'There are no relocations in this file.'
+	@! $(NM) -u $(TARGET) | grep -Eq 'hv_defeat_0304|mp3_|transmitter'
+
+clean:
+	rm -f $(OBJ) $(TARGET) $(TEXT_BIN) $(DUMP)

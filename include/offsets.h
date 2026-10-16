@@ -50,6 +50,19 @@ typedef struct _offset_list {
   /* Wifi FW */
   uint64_t PS5_WIFI_FW_OFFSET;
   uint64_t PS5_WIFI_FW_SIZE;
+  /* 8.xx+ startup-AP carrier (Sonic/Byepervisor architecture). */
+  uint64_t HV_MP_STARTUP_CALL;
+  uint64_t MP_STARTUP_INIT_VECTOR;
+  uint64_t RESUME_DATA_CAVE;
+  uint64_t GAD_PIVOT_ADD_RSP28_RET;
+  uint64_t GAD_STORE_RDI8_RCX;
+  uint64_t GAD_SET_DR7;
+  uint64_t GAD_ST_RCX_RAX;
+  uint64_t GAD_MOV_RAX_RDI;
+  uint64_t GAD_REP_MOVSB;
+  uint64_t GAD_CLD;
+  uint64_t GAD_RET_TRAMP;
+  uint64_t GAD_DBREG_RESUME;
 } offset_list;
 
 extern offset_list off_0300;

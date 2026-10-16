@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 const char *file_paths[] = {
     "/mnt/usb0/",           "/mnt/usb1/",           "/mnt/usb2/",

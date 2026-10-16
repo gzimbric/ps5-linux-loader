@@ -88,6 +88,11 @@ static void e820_memory_setup(struct boot_params *bp) {
     append_e820_table(bp, 0x87f300000, 0x880000000, E820_TYPE_RESERVED);
   }
 
+#if SHELLCODE_HV_1160
+  /* Present in Sonic's proven 13.60 inner HV blob. */
+  append_e820_table(bp, 0x980000000, 0xa00000000, E820_TYPE_RESERVED);
+#endif
+
   for (int i = 0; i < info.n_tmrs; i++) {
     append_e820_table(bp, info.tmrs[i].start, info.tmrs[i].end, E820_TYPE_RESERVED);
   }
@@ -132,6 +137,11 @@ void boot_linux(void) {
 
 void entry(void) {
   disable_intr();
+
+#if SHELLCODE_HV_1160
+  /* Sonic's high-firmware path enables direct UART before leaving SVM. */
+  *(volatile uint32_t *)0xc0115110ULL &= ~0x200U;
+#endif
 
   // Set global interrupt flag.
   __asm__ volatile("stgi\n");

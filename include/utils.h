@@ -8,6 +8,7 @@
 #include <string.h>
 
 int sceKernelGetCurrentCpu();
+int sceKernelGetMainSocId();
 int sceKernelSendNotificationRequest(int, void *, size_t, int);
 int sceKernelOpenEventFlag(void *, const char *);
 int sceKernelNotifySystemSuspendStart(void);

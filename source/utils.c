@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 /* Global Variables */
 offset_list env_offset;
@@ -102,7 +103,7 @@ int set_offsets(void) {
   case 0x0761:
     env_offset = off_0761;
     break;
-#if STAGE2A_1160
+#if STAGE2A_1160 || FW_1160_PORT
   case 0x1160:
     /* Fail closed on the exact retail build observed on the target. */
     if (raw_fw != 0x11600005U)

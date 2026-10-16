@@ -1,6 +1,10 @@
 #include "prepare_resume.h"
 #if STAGE2A_1160
 #include "../shellcode_kernel_1160/shellcode_kernel_1160.h"
+#elif FW_1160_PORT
+#include "../shellcode_kernel_port_1160/shellcode_kernel_port_1160.h"
+#define shellcode_kernel_bin shellcode_kernel_port_1160_bin
+#define shellcode_kernel_bin_len shellcode_kernel_port_1160_bin_len
 #else
 #include "../shellcode_kernel/shellcode_kernel.h"
 #endif
