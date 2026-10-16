@@ -5,6 +5,7 @@ READELF = x86_64-elf-readelf
 
 PS5_1160_DIAG_PRE_STAGE ?= 5
 PS5_1160_DIAG_OP_LIMIT ?= 29
+PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 1
 
 CFLAGS := -Os -fomit-frame-pointer -fno-stack-protector -ffreestanding \
 	-nostdlib -fPIE -fno-plt -fcf-protection=none -mno-sse -mno-sse2 -m64 \
@@ -14,7 +15,8 @@ CFLAGS := -Os -fomit-frame-pointer -fno-stack-protector -ffreestanding \
 ifeq ($(PS5_1160_DIAGNOSTIC),1)
 CFLAGS += -DSHELLCODE_1160_DIAGNOSTIC=1 \
 	-DPS5_1160_DIAG_PRE_STAGE=$(PS5_1160_DIAG_PRE_STAGE) \
-	-DPS5_1160_DIAG_OP_LIMIT=$(PS5_1160_DIAG_OP_LIMIT)
+	-DPS5_1160_DIAG_OP_LIMIT=$(PS5_1160_DIAG_OP_LIMIT) \
+	-DPS5_1160_DIAG_CLEAR_MP3_BUFFERS=$(PS5_1160_DIAG_CLEAR_MP3_BUFFERS)
 endif
 LDFLAGS := -pie -T linker.ld -Wl,--gc-sections
 

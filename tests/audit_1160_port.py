@@ -32,10 +32,13 @@ diagnostic_build = diag_mode_text == "1"
 if diagnostic_build:
     diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE", "5")
     diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT", "29")
+    diag_clear_text = os.environ.get("PS5_1160_DIAG_CLEAR_MP3_BUFFERS", "1")
     diag_pre_stage = int(diag_pre_text, 0)
     diag_op_limit = int(diag_op_text, 0)
+    diag_clear_mp3_buffers = int(diag_clear_text, 0)
     assert 0 <= diag_pre_stage <= 5
     assert 0 <= diag_op_limit <= 29
+    assert diag_clear_mp3_buffers in (0, 1)
 
 
 def u32(value: int) -> bytes:
@@ -233,6 +236,9 @@ if diagnostic_build:
     assert elf_symbol_bytes(
         WAKE_ELF, "ps5_diag_display_op_limit_1160"
     ) == struct.pack("<I", diag_op_limit)
+    assert elf_symbol_bytes(
+        WAKE_ELF, "ps5_diag_clear_mp3_buffers_1160"
+    ) == struct.pack("<I", diag_clear_mp3_buffers)
 
 # Do not accidentally ship the corresponding 13.60 offsets.
 for value in (0x39C9490, 0x2590B0, 0xCB92C0):
@@ -292,6 +298,8 @@ assert "VALIDATED_INITRD_SIZE_1160 54376639ULL" in loader_source
 # live in the checked, retained tail of the linux_info page so the exact
 # hardware-proven 0x5000 executable cave is not moved.
 assert "SHELLCODE_1160_HEADLESS" not in wake_makefile
+assert "PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 1" in wake_makefile
+assert "-DPS5_1160_DIAG_CLEAR_MP3_BUFFERS=" in wake_makefile
 for required in (
     "memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000)",
     "dp_enable_link_phy(4, 30)",
@@ -431,6 +439,7 @@ if diagnostic_build:
         r"\bcmp\s+ebx,0x2",
         r"<mp3_initialize>",
         r"<mp3_invoke>",
+        r"<ps5_diag_clear_mp3_buffers_1160>",
         r"\bcmp\s+ebx,0x3",
         r"\bmov\s+edi,0x15",
         r"<mp3_invoke>",
@@ -439,6 +448,19 @@ if diagnostic_build:
         r"<mp3_invoke>",
     ):
         pre_cursor = instruction_position(boot_linux_body, gate, pre_cursor + 1)
+
+    # The independently auditable clear flag must branch directly to the
+    # zero-argument MP3 initializer, skipping only the two buffer-clear loops.
+    clear_bypass = re.search(
+        r"<ps5_diag_clear_mp3_buffers_1160>.*?"
+        r"\bje\s+([0-9a-f]+)\s+<boot_linux\+.*?\n"
+        r".*?^\s*([0-9a-f]+):[^\n]*\bxor\s+edi,edi\n"
+        r"^\s*[0-9a-f]+:[^\n]*\bcall\s+rsi\b",
+        boot_linux_body,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert clear_bypass
+    assert clear_bypass.group(1) == clear_bypass.group(2)
 
 display_dispatch = re.search(
     r"<run_ps5_display_ops_1160>:\n(.*?)(?=\n[0-9a-f]+ <[^>]+>:)",
@@ -585,7 +607,8 @@ assert u32(0xC0115110) in inner_hv
 assert u32(0xFFFFFDFF) in inner_hv
 
 diag_label = (
-    f" diag-pre={diag_pre_stage} diag-ops={diag_op_limit}"
+    f" diag-pre={diag_pre_stage} diag-ops={diag_op_limit} "
+    f"diag-clear-mp3={diag_clear_mp3_buffers}"
     if diagnostic_build
     else ""
 )

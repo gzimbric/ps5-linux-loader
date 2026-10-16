@@ -73,11 +73,19 @@ static struct linux_info info;
 #ifndef PS5_1160_DIAG_PRE_STAGE
 #define PS5_1160_DIAG_PRE_STAGE 5
 #endif
+#ifndef PS5_1160_DIAG_CLEAR_MP3_BUFFERS
+#define PS5_1160_DIAG_CLEAR_MP3_BUFFERS 1
+#endif
 _Static_assert(PS5_1160_DIAG_PRE_STAGE >= 0 &&
                    PS5_1160_DIAG_PRE_STAGE <= 5,
                "11.60 diagnostic pre-display stage is out of range");
+_Static_assert(PS5_1160_DIAG_CLEAR_MP3_BUFFERS == 0 ||
+                   PS5_1160_DIAG_CLEAR_MP3_BUFFERS == 1,
+               "11.60 diagnostic MP3 clear gate must be 0 or 1");
 volatile const uint32_t ps5_diag_pre_stage_1160 =
     PS5_1160_DIAG_PRE_STAGE;
+volatile const uint32_t ps5_diag_clear_mp3_buffers_1160 =
+    PS5_1160_DIAG_CLEAR_MP3_BUFFERS;
 #endif
 
 #define MP3_REQ_WORDS 1281ULL
@@ -277,7 +285,8 @@ void boot_linux(void) {
   }
 
   if (diag_pre_stage >= 3 && mp3_initialize != NULL && mp3_invoke != NULL) {
-    clear_mp3_buffers();
+    if (ps5_diag_clear_mp3_buffers_1160 != 0)
+      clear_mp3_buffers();
     mp3_initialize(0);
     if (diag_pre_stage >= 4)
       mp3_set_hdcp_packet(0, 1);
