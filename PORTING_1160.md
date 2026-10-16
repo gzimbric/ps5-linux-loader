@@ -64,7 +64,8 @@ automated for every candidate.
   byte in the final wake ELF.
 - The compact 11.60 build reuses the otherwise-free tail of the aligned
   `linux_info_va` page for the MP3 request/response work buffers. The buffers
-  begin at offsets `0x1000` and `0x2410`, end at `0x3818`, and therefore do
+  begin at offsets `0x1000` and `0x2420`, are both 32-byte aligned like
+  Sonic's buffers, end at `0x3828`, and therefore do
   not overlap the 0xc38-byte Linux information structure or exceed its
   0x4000-byte page.
 - Sonic's inner-HV UART-enable operation and reserved E820 range

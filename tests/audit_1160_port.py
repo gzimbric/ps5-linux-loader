@@ -26,11 +26,12 @@ CONFIG = ROOT / "include/config.h"
 WAKE_MAKEFILE = ROOT / "shellcode_kernel_port_1160/Makefile"
 WAKE_MAIN = ROOT / "shellcode_kernel/main.c"
 
-diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE")
-diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT")
-assert (diag_pre_text is None) == (diag_op_text is None)
-diagnostic_build = diag_pre_text is not None
+diag_mode_text = os.environ.get("PS5_1160_DIAGNOSTIC")
+assert diag_mode_text in (None, "0", "1")
+diagnostic_build = diag_mode_text == "1"
 if diagnostic_build:
+    diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE", "5")
+    diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT", "29")
     diag_pre_stage = int(diag_pre_text, 0)
     diag_op_limit = int(diag_op_text, 0)
     assert 0 <= diag_pre_stage <= 5
@@ -300,7 +301,8 @@ for required in (
     "mp3_set_hdcp_packet(0, 1)",
     "mp3_enable_output(0, 1)",
     "MP3_REQ_OFFSET 0x1000ULL",
-    "MP3_RSP_OFFSET 0x2410ULL",
+    "MP3_RSP_OFFSET 0x2420ULL",
+    "Sonic MP3 buffers must remain 32-byte aligned",
     "args.linux_info_va + MP3_REQ_OFFSET",
     "args.linux_info_va + MP3_RSP_OFFSET",
 ):
@@ -400,6 +402,44 @@ assert "#define cave 0x100000000ULL" in config_source
 assert "cave_hv_paging + 0x3000ULL" in config_source
 
 wake_disassembly = tool_output("x86_64-elf-objdump", "-d", "-Mintel", WAKE_ELF)
+boot_linux_disassembly = re.search(
+    r"<boot_linux>:\n(.*?)(?=\n[0-9a-f]+ <[^>]+>:)",
+    wake_disassembly,
+    re.DOTALL,
+)
+assert boot_linux_disassembly
+boot_linux_body = boot_linux_disassembly.group(1)
+
+
+def instruction_position(body: str, pattern: str, start: int = 0) -> int:
+    match = re.search(pattern, body[start:])
+    assert match, pattern
+    return start + match.start()
+
+
+if diagnostic_build:
+    # PRE0 must branch around every display pre-stage while retaining the
+    # exact PRE1..PRE5 sequence for later no-UART hardware bisection.
+    pre_cursor = instruction_position(
+        boot_linux_body, r"<ps5_diag_pre_stage_1160>"
+    )
+    for gate in (
+        r"\btest\s+ebx,ebx",
+        r"<g_vbios>",
+        r"\bcmp\s+ebx,0x1",
+        r"<transmitter_control>",
+        r"\bcmp\s+ebx,0x2",
+        r"<mp3_initialize>",
+        r"<mp3_invoke>",
+        r"\bcmp\s+ebx,0x3",
+        r"\bmov\s+edi,0x15",
+        r"<mp3_invoke>",
+        r"\bcmp\s+ebx,0x4",
+        r"\bmov\s+edi,0x16",
+        r"<mp3_invoke>",
+    ):
+        pre_cursor = instruction_position(boot_linux_body, gate, pre_cursor + 1)
+
 display_dispatch = re.search(
     r"<run_ps5_display_ops_1160>:\n(.*?)(?=\n[0-9a-f]+ <[^>]+>:)",
     wake_disassembly,
@@ -415,8 +455,21 @@ assert re.search(
 )
 assert len(re.findall(r"\bcall\s+r12\b", display_dispatch_body)) == 2
 if diagnostic_build:
-    assert "<ps5_diag_display_op_limit_1160>" in display_dispatch_body
-    assert re.search(r"\bcmp\s+ebp,r14d", display_dispatch_body)
+    limit_load = instruction_position(
+        display_dispatch_body, r"<ps5_diag_display_op_limit_1160>"
+    )
+    limit_compare = instruction_position(
+        display_dispatch_body, r"\bcmp\s+ebp,r14d", limit_load + 1
+    )
+    conditional_exit = instruction_position(
+        display_dispatch_body,
+        r"\bje\s+[0-9a-f]+\s+<run_ps5_display_ops_1160\+",
+        limit_compare + 1,
+    )
+    first_indirect_call = instruction_position(
+        display_dispatch_body, r"\bcall\s+(?:QWORD PTR \[[^\]]+\]|r12)"
+    )
+    assert limit_load < limit_compare < conditional_exit < first_indirect_call
 else:
     assert re.search(r"\bcmp\s+ebp,0x1d", display_dispatch_body)
 patch_hv_disassembly = re.search(

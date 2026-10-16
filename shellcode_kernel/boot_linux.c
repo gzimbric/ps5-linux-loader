@@ -84,7 +84,7 @@ volatile const uint32_t ps5_diag_pre_stage_1160 =
 #define MP3_RSP_WORDS 1282ULL
 #if SHELLCODE_1160_ONLY
 #define MP3_REQ_OFFSET 0x1000ULL
-#define MP3_RSP_OFFSET 0x2410ULL
+#define MP3_RSP_OFFSET 0x2420ULL
 
 /*
  * Sonic keeps these two MP3 IPC buffers in the wake blob's zero-filled data.
@@ -96,6 +96,8 @@ volatile const uint32_t ps5_diag_pre_stage_1160 =
  */
 _Static_assert(sizeof(struct linux_info) <= MP3_REQ_OFFSET,
                "linux_info overlaps MP3 request buffer");
+_Static_assert((MP3_REQ_OFFSET & 31) == 0 && (MP3_RSP_OFFSET & 31) == 0,
+               "Sonic MP3 buffers must remain 32-byte aligned");
 _Static_assert(MP3_REQ_OFFSET + MP3_REQ_WORDS * sizeof(int) <= MP3_RSP_OFFSET,
                "MP3 request and response buffers overlap");
 _Static_assert(MP3_RSP_OFFSET + MP3_RSP_WORDS * sizeof(int) <= PAGE_SIZE,
