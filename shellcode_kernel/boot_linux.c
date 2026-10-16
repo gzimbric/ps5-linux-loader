@@ -153,6 +153,8 @@ void patch_hv(void) {
   uint8_t shellcode_jmp[] = {0x48, 0xC7, 0xC0, 0xAA,
                              0xAA, 0xAA, 0xAA, // mov rax, 0xAAAAAAAA
                              0xFF, 0xE0};      // jmp rax
+  _Static_assert(sizeof(shellcode_jmp) == 9,
+                 "VMEXIT absolute-jump patch size changed");
 
   // Update code cave in hv 1:1 region
   *(uint32_t *)(&shellcode_jmp[3]) = (uint32_t)args.hv_code_cave_pa;
@@ -169,6 +171,8 @@ void patch_hv(void) {
       0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // movabs rax, 0xAAAAAAAAAAAAAAAA
       0xFF, 0xE0                    // jmp    rax
   };
+  _Static_assert(sizeof(shellcode_identity_and_jmp) == 25,
+                 "HV identity transition stub size changed");
 
   // Update CR3 PA (from config)
   *(uint64_t *)(&shellcode_identity_and_jmp[2]) = cave_hv_paging;

@@ -30,6 +30,15 @@ a retail 11.60 console.
   proven only on regular PS5 hardware.
 - `AcpiGbl_FACS` is `ktext + 0x39cd1f0` and `memcpy` is
   `ktext + 0x2e7e40`.
+- Sonic's two resume pivots remain distinct. The startup #DB carrier uses
+  `ktext + 0x2a0ede` (`add rsp,0x28; ret`), while the final #GP/#SX gates use
+  the exact cross-firmware homolog `ktext + 0xa57354`
+  (`add rsp,0x28; pop rbp; ret`) for their six-qword IST frames.
+- The VMEXIT transition stub uses Sonic's established physical HV padding at
+  `0x62806f00`. The local 11.60 HV dump proves the full
+  `[0x62806f00,0x62807000)` interval is `0xcc` padding, and prior live page
+  walks prove that page executable and identity-mapped before and after the
+  CR3 switch.
 - The wake destination is the live-tested executable NOP range
   `[ktext+0xd2b000, ktext+0xd30000)`. The dedicated wake blob must remain at
   or below `0x5000` bytes.
@@ -64,6 +73,12 @@ The output is `bin/ps5-linux-loader-1160.elf`.
 - each raw `.shell_code` begins at `main` and embeds correctly;
 - the public wake ABI remains exactly 0x98 bytes;
 - the exact 11.60 offsets are present and selected 13.60 offsets are absent;
+- the startup #DB and final #GP/#SX pivots are both present, distinct, and used
+  only at their Sonic-matching exception sites;
+- the VMEXIT transition targets `0x62806f00`, not the unusable `0x6284ac20`
+  address used by the failed run-6 candidate. The latter's low VA is absent
+  under the active runtime host CR3 and is present-but-NX only under the
+  inactive bootstrap tables;
 - Sonic's two required inner-HV deltas are encoded;
 - the final payload contains exactly one wake blob and one AP donor blob.
 
