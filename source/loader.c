@@ -146,7 +146,7 @@ int read_file(const char *path, void *buf, size_t bufsize) {
 #define MAX_BZIMAGE_SIZE_1160 (64ULL * 1024ULL * 1024ULL)
 #define MAX_INITRD_SIZE_1160 (128ULL * 1024ULL * 1024ULL)
 #define VALIDATED_BZIMAGE_SIZE_1160 12702720ULL
-#define VALIDATED_INITRD_SIZE_1160 28777476ULL
+#define VALIDATED_INITRD_SIZE_1160 54376639ULL
 
 static int align_mapping_size_1160(size_t size, size_t *aligned) {
   if (size == 0 || size > SIZE_MAX - (PAGE_SIZE - 1))

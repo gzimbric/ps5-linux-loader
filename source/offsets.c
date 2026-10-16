@@ -795,6 +795,16 @@ offset_list off_1160 = {
     .HV_CODE_CAVE_PA = 0x62806F00,
     .HV_HANDLE_VMEXIT_PA = 0x62847551,
     .KERNEL_CFI_CHECK = 0x4EBEB0,
+    /*
+     * Sonic display handoff, ported by structural matching against the
+     * authenticated 11.60 ktext dump.  G_VBIOS is proven by the 0x10000-byte
+     * copy loop at 0xC7FD10; the three functions are the exact 11.60 homologs
+     * of Sonic 13.60's transmitter and MP3 wrappers.
+     */
+    .G_VBIOS = 0x3DB7A40,
+    .FUN_TRANSMITTER_CONTROL = 0xC800C0,
+    .FUN_MP3_INITIALIZE = 0xA88270,
+    .FUN_MP3_INVOKE = 0xA86E70,
     .HV_MP_STARTUP_CALL = 0xC885D0,
     .MP_STARTUP_INIT_VECTOR = 0x3110B8,
     .RESUME_DATA_CAVE = 0x2D02000,

@@ -7,6 +7,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import struct
 import subprocess
 
 
@@ -22,6 +23,8 @@ STAGING = ROOT / "source/loader_staging_1160.c"
 HV_DEFEAT = ROOT / "source/hv_defeat_1160.c"
 BOOT_LINUX = ROOT / "shellcode_kernel/boot_linux.c"
 CONFIG = ROOT / "include/config.h"
+WAKE_MAKEFILE = ROOT / "shellcode_kernel_port_1160/Makefile"
+WAKE_MAIN = ROOT / "shellcode_kernel/main.c"
 
 
 def u32(value: int) -> bytes:
@@ -159,6 +162,10 @@ for field_index, value in {
     23: 0xD2B000,   # KERNEL_CODE_CAVE
     29: 0x62806F00,  # Sonic's executable identity-mapped HV cave
     30: 0x62847551,  # HV_HANDLE_VMEXIT_PA
+    33: 0x3DB7A40,  # G_VBIOS, resolved by 0x10000-byte copy-loop xref
+    34: 0xC800C0,   # transmitter_control
+    35: 0xA88270,   # mp3_initialize wrapper
+    36: 0xA86E70,   # mp3_invoke
     39: 0xC885D0,   # HV_MP_STARTUP_CALL
     41: 0x2D02000,  # RESUME_DATA_CAVE
     42: 0x2A0EDE,   # startup #DB: add rsp,0x28; rep ret
@@ -166,6 +173,48 @@ for field_index, value in {
     assert off_1160[field_index * 8 : field_index * 8 + 8] == u64(value), hex(value)
 assert u64(0x6284AC20) not in off_1160
 assert off_1160[12 * 8 : 13 * 8] != off_1160[42 * 8 : 43 * 8]
+
+# Sonic's complete post-stage HDMI sequence, translated entry-for-entry to
+# authenticated 11.60 homologs.  Preserve the original 0x18-byte record ABI,
+# order, EDI values, and the one two-argument call.
+display_records = (
+    (0x00362730, 0, 0, 0),
+    (0x00362980, 0, 0, 0),
+    (0x00362AD0, 0, 0, 0),
+    (0x00362C90, 0, 0, 0),
+    (0x00C16F70, 0, 0, 0),
+    (0x00333410, 0, 0, 0),
+    (0x00751F20, 0, 0, 0),
+    (0x00B01800, 0, 0, 0),
+    (0x005381C0, 0, 0, 0),
+    (0x005383B0, 0, 0, 0),
+    (0x00362AA0, 0, 0, 0),
+    (0x00B88B80, 0, 0, 0),
+    (0x00B896F0, 0, 0, 0),
+    (0x00B89900, 0, 0, 0),
+    (0x00B89A40, 0, 0, 0),
+    (0x00334460, 0, 0, 0),
+    (0x00334460, 1, 0, 0),
+    (0x00334460, 2, 0, 0),
+    (0x00334460, 3, 0, 0),
+    (0x00362CC0, 0, 0, 0),
+    (0x00538580, 0, 0, 0),
+    (0x00538700, 0, 0, 0),
+    (0x00B88C70, 0, 0, 0),
+    (0x007585F0, 0, 0, 0),
+    (0x009DC910, 1, 2, 0x7F0),
+    (0x0053D9F0, 0, 0, 0),
+    (0x00539460, 1, 0, 0),
+    (0x00538ED0, 0, 0, 0),
+    (0x00538D70, 0, 0, 0),
+)
+expected_display_table = b"".join(
+    struct.pack("<QIIQ", offset, arg1, mode, arg2)
+    for offset, arg1, mode, arg2 in display_records
+)
+display_table = elf_symbol_bytes(WAKE_ELF, "ps5_display_ops_1160")
+assert len(display_table) == 29 * 0x18
+assert display_table == expected_display_table
 
 # Do not accidentally ship the corresponding 13.60 offsets.
 for value in (0x39C9490, 0x2590B0, 0xCB92C0):
@@ -201,6 +250,8 @@ staging_source = STAGING.read_text()
 hv_defeat_source = HV_DEFEAT.read_text()
 boot_linux_source = BOOT_LINUX.read_text()
 config_source = CONFIG.read_text()
+wake_makefile = WAKE_MAKEFILE.read_text()
+wake_main_source = WAKE_MAIN.read_text()
 assert loader_source.count("stage_linux_aliases_1160(") == 1
 for required in (
     "get_proc_pmap_checked",
@@ -216,7 +267,50 @@ for required in (
     assert required in staging_source, required
 assert "mlock(" not in staging_source
 assert "VALIDATED_BZIMAGE_SIZE_1160 12702720ULL" in loader_source
-assert "VALIDATED_INITRD_SIZE_1160 28777476ULL" in loader_source
+assert "VALIDATED_INITRD_SIZE_1160 54376639ULL" in loader_source
+
+# The display-enabled build mirrors Sonic's pre-Linux handoff and must never
+# silently regress to the run-7 headless compile.  Its two large MP3 buffers
+# live in the checked, retained tail of the linux_info page so the exact
+# hardware-proven 0x5000 executable cave is not moved.
+assert "SHELLCODE_1160_HEADLESS" not in wake_makefile
+for required in (
+    "memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000)",
+    "dp_enable_link_phy(4, 30)",
+    "wait_for_transmitter()",
+    "read_tsc() - start <= 349999999ULL",
+    "mp3_initialize(0)",
+    "mp3_set_hdcp_packet(0, 1)",
+    "mp3_enable_output(0, 1)",
+    "MP3_REQ_OFFSET 0x1000ULL",
+    "MP3_RSP_OFFSET 0x2410ULL",
+    "args.linux_info_va + MP3_REQ_OFFSET",
+    "args.linux_info_va + MP3_RSP_OFFSET",
+):
+    assert required in boot_linux_source, required
+assert u32(349999999) in wake
+display_order = (
+    "boot_linux();",
+    "run_ps5_display_ops_1160();",
+    'printf("Linux prepared OK\\n");',
+    "smp_rendezvous(",
+)
+only_1160_main = wake_main_source.split("#if SHELLCODE_1160_ONLY", 2)[2].split(
+    "#else", 1
+)[0]
+cursor = 0
+for step in display_order:
+    cursor = only_1160_main.index(step, cursor) + len(step)
+offsets_present_source = hv_defeat_source.split(
+    "static int offsets_present", 1
+)[1].split("static int walk_page", 1)[0]
+for display_offset in (
+    "env_offset.G_VBIOS",
+    "env_offset.FUN_TRANSMITTER_CONTROL",
+    "env_offset.FUN_MP3_INITIALIZE",
+    "env_offset.FUN_MP3_INVOKE",
+):
+    assert display_offset in offsets_present_source, display_offset
 
 # Sonic uses two semantically different stack pivots.  #DB has no error code,
 # whereas #GP/#SX have one extra qword that the pop-rbp pivot must consume.
@@ -289,6 +383,21 @@ assert "#define cave 0x100000000ULL" in config_source
 assert "cave_hv_paging + 0x3000ULL" in config_source
 
 wake_disassembly = tool_output("x86_64-elf-objdump", "-d", "-Mintel", WAKE_ELF)
+display_dispatch = re.search(
+    r"<run_ps5_display_ops_1160>:\n(.*?)(?=\n[0-9a-f]+ <[^>]+>:)",
+    wake_disassembly,
+    re.DOTALL,
+)
+assert display_dispatch
+display_dispatch_body = display_dispatch.group(1)
+assert re.search(r"\bmov\s+edi,DWORD PTR \[rbx\+0x8\]", display_dispatch_body)
+assert re.search(r"\bcmp\s+DWORD PTR \[rbx\+0xc\],0x2", display_dispatch_body)
+assert re.search(r"\bmov\s+rsi,QWORD PTR \[rbx\+0x10\]", display_dispatch_body)
+assert re.search(
+    r"\badd\s+r12,QWORD PTR \[rax\+0x8\]", display_dispatch_body
+)
+assert len(re.findall(r"\bcall\s+r12\b", display_dispatch_body)) == 2
+assert re.search(r"\bcmp\s+ebp,0x1d", display_dispatch_body)
 patch_hv_disassembly = re.search(
     r"<patch_hv>:\n(.*?)(?=\n[0-9a-f]+ <boot_linux>:)",
     wake_disassembly,
@@ -311,6 +420,69 @@ if ktext_dump_path:
     )
     assert ktext_dump[0xA57354 : 0xA5735A] == bytes.fromhex("4883c4285dc3")
     assert ktext_dump[0x2A0EDE : 0x2A0EE4] == bytes.fromhex("4883c428f3c3")
+
+    # Authenticated display handoff offsets.  The VBIOS storage itself lies in
+    # kdata, outside this text dump, so resolve it from the exact RIP-relative
+    # reference in the 0x10000-byte VBIOS copy loop.
+    vbios_copy = ktext_dump[0xC7FD10 : 0xC7FD42]
+    assert vbios_copy.startswith(
+        bytes.fromhex("554889e5415741564155415453504889fb4885ff741c488d0d")
+    )
+    assert bytes.fromhex("483d0000010075ee") in vbios_copy
+    vbios_disp = int.from_bytes(ktext_dump[0xC7FD29 : 0xC7FD2D], "little", signed=True)
+    assert 0xC7FD2D + vbios_disp == 0x3DB7A40
+    assert ktext_dump[0xC800C0 : 0xC800DF].startswith(
+        bytes.fromhex("554889e54156534189fe488d3d")
+    )
+    assert ktext_dump[0xA88270 : 0xA8827D] == bytes.fromhex(
+        "554889e5535089febf50052105"
+    )
+    assert ktext_dump[0xA86E70 : 0xA86E85] == bytes.fromhex(
+        "554889e54157415641554154534881ec480a000048"
+    )
+
+    # Freeze every unique native 11.60 HDMI-operation target to the same
+    # authenticated dump used for the structural 13.60 -> 11.60 match.
+    display_target_hashes = (
+        (0x00362730, 0x24E, "3ec783c9b6b9b6133fae1fc0e7084154116e950bc0c0f67fb81f9b451b16c08f"),
+        (0x00362980, 0x11A, "0c7eedf44d576716f88a4b99b0622cc8c4f5d1fd2277792613879a5c28ab770d"),
+        (0x00362AD0, 0x158, "3ea96f6dd479ce0a4568e744864616b3da20af7e80f82f3dbe8fe5abacdac1ef"),
+        (0x00362C90, 0x00C, "1794941374d37a7da6e3cfcf3bd6273cf554566475c8b448d66d7df64e640345"),
+        (0x00C16F70, 0x010, "b7055a771b73e246892e6b770dd938c40c858b735e811617e77b2ab240c6a8c6"),
+        (0x00333410, 0x010, "cbf4a75b1b5d477967f04eb7094bb9cd3db1bceb2a5a92b525c1e73eaab3f9ce"),
+        (0x00751F20, 0x01E, "d20c572479055595e6d7e88373a9ec26f59f9c299e73f3317f6a76c95b887781"),
+        (0x00B01800, 0x010, "5f24b7557edf5d173d2895c1da631d8de196335c3ae576383c011445fafda02d"),
+        (0x005381C0, 0x1E3, "6bd98a138bfd654620729b3315153c4e0ca1b73b8cc12d5bb631a0fc39a29c99"),
+        (0x005383B0, 0x1C1, "96288b7e10cdca59ac0cd96331a773dc9600f69f9d1537a3e816ca671d8f4d56"),
+        (0x00362AA0, 0x00C, "b223afb164de3fddf4711b9f44ef3dbceeafd70019befa2d42ce916f6ce54631"),
+        (0x00B88B80, 0x0E2, "24dd2b2fbec6db2710cfb741174345850aed575ecebde752c6d4485d42caeff0"),
+        (0x00B896F0, 0x208, "5f79968a1468d733203346db45d5c0d1d1a4fcdb4c2c9cea6f245062795512bb"),
+        (0x00B89900, 0x13F, "99232d2ac711f35dc1d2bc8053bfa74ed602cb0b590eb8a5f9570dfd5459f6ce"),
+        (0x00B89A40, 0x123, "0b52ba99a030398b2e3ca09df77e9fddba4f7da50f1ea3354d81c3b2b68c68b8"),
+        (0x00334460, 0x186, "9ec5255b3a25c6235cd2cbe61481e240c0c1e72ea855ba72a87940001ec5f273"),
+        (0x00362CC0, 0x018, "45aac6842559173af08ad49da38e5638b6b9d424d8a2d9be9b58266d7eefa3d9"),
+        (0x00538580, 0x17B, "8800618803f998e0fadd4c5c96a6eb2d19898593c84dc35a4339ee3f0ba7a6af"),
+        (0x00538700, 0x164, "2d3b0fa96fbc8b9994f77dc276eaf4dde84dfb2273f559759bfc7e30c0811792"),
+        (0x00B88C70, 0x13D, "3f87fa35742af07c2f1d64c34a698b6ec593fc9dc0cd3026ddfffd548635f003"),
+        (0x007585F0, 0x00C, "e0a7d5ece47661d1ed1afd64d4e58d0acdcba91da5936822974fc43cbac7709a"),
+        (0x009DC910, 0x0F2, "54fe8672776dd2c6c7710fff1f712bdbd61467c1867ffb79cab68a1cc57dc0f1"),
+        (0x0053D9F0, 0x8C4, "c60f615906e87b8919e8533d1c77615d1586ccb61ce5a6c22de30833a482f051"),
+        (0x00539460, 0x254D, "cc48bc84fd46ba6e9a3c7e80219d0341c51644f9612a4848250ac36ed3119727"),
+        (0x00538ED0, 0x15B, "f70526de9c0fdc85bd227d46e0a529a3d6d8ced0327988496e2b5938d96d19e6"),
+        (0x00538D70, 0x159, "186fa44933eb03ffb74fba976b0877d3f3004c3033e17b7ed4db84fbea978e2c"),
+    )
+    assert {offset for offset, _, _ in display_target_hashes} == {
+        offset for offset, _, _, _ in display_records
+    }
+    for offset, size, expected_hash in display_target_hashes:
+        assert hashlib.sha256(ktext_dump[offset : offset + size]).hexdigest() == expected_hash
+
+    # Operation 26 has a long, firmware-specific cold tail.  Also pin the
+    # structurally matched entry prefix through the last instruction before
+    # its packet-selection branch so identity remains independently visible.
+    assert hashlib.sha256(ktext_dump[0x539460 : 0x539512]).hexdigest() == (
+        "6ccf76c082d8918d94905b81ec61ac295299b6265e2cdaaebc7ae68fe31a808a"
+    )
 
 hv_dump_path = os.environ.get("PS5_1160_HV_DUMP")
 if hv_dump_path:

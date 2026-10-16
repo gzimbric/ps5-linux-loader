@@ -6,24 +6,32 @@ READELF = x86_64-elf-readelf
 CFLAGS := -Os -fomit-frame-pointer -fno-stack-protector -ffreestanding \
 	-nostdlib -fPIE -fno-plt -fcf-protection=none -mno-sse -mno-sse2 -m64 \
 	-ffunction-sections -fdata-sections -DSHELLCODE_1160_ONLY=1 \
-	-DSHELLCODE_1160_HEADLESS=1 -I../shellcode_kernel -I../include
+	-I../shellcode_kernel -I../include
 LDFLAGS := -pie -T linker.ld -Wl,--gc-sections
 
 TARGET   := shellcode_kernel_port_1160.elf
 TEXT_BIN := shellcode_kernel_port_1160.bin
 DUMP     := shellcode_kernel_port_1160.h
-OBJ      := main.o boot_linux.o utils.o
+OBJ      := main.o boot_linux.o display_ops_1160.o utils.o
 
 .PHONY: all check clean
 
 all: $(DUMP)
 
 main.o: ../shellcode_kernel/main.c ../shellcode_kernel/main.h \
-	../shellcode_kernel/shellcode_kernel_args_validate.h
+	../shellcode_kernel/shellcode_kernel_args_validate.h \
+	../shellcode_kernel/display_ops_1160.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 boot_linux.o: ../shellcode_kernel/boot_linux.c \
+	../shellcode_kernel/boot_linux.h ../shellcode_kernel/utils.h \
+	../include/config.h ../include/linux.h \
 	../shellcode_hv_port_1160/shellcode_hv_port_1160.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+display_ops_1160.o: ../shellcode_kernel/display_ops_1160.c \
+	../shellcode_kernel/display_ops_1160.h \
+	../shellcode_kernel/shellcode_kernel_args.h ../shellcode_kernel/utils.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 utils.o: ../shellcode_kernel/utils.c ../shellcode_kernel/utils.h

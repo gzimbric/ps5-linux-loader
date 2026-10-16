@@ -117,6 +117,10 @@ static int offsets_present(void) {
       env_offset.GAD_CLD,
       env_offset.GAD_RET_TRAMP,
       env_offset.GAD_DBREG_RESUME,
+      env_offset.G_VBIOS,
+      env_offset.FUN_TRANSMITTER_CONTROL,
+      env_offset.FUN_MP3_INITIALIZE,
+      env_offset.FUN_MP3_INVOKE,
   };
 
   if (kernel_get_fw_version() != FW_1160_RAW || fw != 0x1160)

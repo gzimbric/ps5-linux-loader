@@ -1,5 +1,8 @@
 #include "main.h"
 #include "boot_linux.h"
+#if SHELLCODE_1160_ONLY
+#include "display_ops_1160.h"
+#endif
 #if !SHELLCODE_1160_ONLY
 #include "hv_defeat_0304.h"
 #endif
@@ -31,6 +34,7 @@ __attribute__((section(".entry_point"))) uint32_t main(uint64_t add1,
   init_global_pointers(args_ptr);
   *(uint8_t *)args_ptr->kernel_cfi_check = 0xC3;
   boot_linux();
+  run_ps5_display_ops_1160();
   printf("Linux prepared OK\n");
   printf("Good Bye VM :)\n");
   smp_rendezvous(smp_no_rendevous_barrier, vmmcall_dummy,

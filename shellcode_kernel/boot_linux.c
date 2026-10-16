@@ -69,7 +69,51 @@ struct dig_transmitter_control_parameters_v1_6 {
 static struct linux_info info;
 
 #if !SHELLCODE_1160_HEADLESS
-static int mp3_req[1281], mp3_rsp[1282];
+#define MP3_REQ_WORDS 1281ULL
+#define MP3_RSP_WORDS 1282ULL
+#if SHELLCODE_1160_ONLY
+#define MP3_REQ_OFFSET 0x1000ULL
+#define MP3_RSP_OFFSET 0x2410ULL
+
+/*
+ * Sonic keeps these two MP3 IPC buffers in the wake blob's zero-filled data.
+ * The authenticated 11.60 executable cave is 0x5000 bytes, and embedding the
+ * same 0x280c bytes would make the otherwise identical display-enabled blob
+ * 792 bytes too large.  The checked linux_info alias owns one complete 0x4000
+ * page; linux_info occupies 0xc38 bytes, leaving a disjoint, retained tail for
+ * the exact same request/response buffers without moving the proven cave.
+ */
+_Static_assert(sizeof(struct linux_info) <= MP3_REQ_OFFSET,
+               "linux_info overlaps MP3 request buffer");
+_Static_assert(MP3_REQ_OFFSET + MP3_REQ_WORDS * sizeof(int) <= MP3_RSP_OFFSET,
+               "MP3 request and response buffers overlap");
+_Static_assert(MP3_RSP_OFFSET + MP3_RSP_WORDS * sizeof(int) <= PAGE_SIZE,
+               "MP3 buffers exceed the retained linux_info page");
+
+static int *mp3_req_buffer(void) {
+  return (int *)(args.linux_info_va + MP3_REQ_OFFSET);
+}
+
+static int *mp3_rsp_buffer(void) {
+  return (int *)(args.linux_info_va + MP3_RSP_OFFSET);
+}
+#else
+static int mp3_req[MP3_REQ_WORDS], mp3_rsp[MP3_RSP_WORDS];
+
+static int *mp3_req_buffer(void) { return mp3_req; }
+
+static int *mp3_rsp_buffer(void) { return mp3_rsp; }
+#endif
+
+static void clear_mp3_buffers(void) {
+  int *req = mp3_req_buffer();
+  int *rsp = mp3_rsp_buffer();
+
+  for (uint64_t i = 0; i < MP3_REQ_WORDS; i++)
+    req[i] = 0;
+  for (uint64_t i = 0; i < MP3_RSP_WORDS; i++)
+    rsp[i] = 0;
+}
 #endif
 
 static inline void stac(void) { __asm__ volatile("stac" : : : "cc"); }
@@ -110,16 +154,33 @@ static int dp_enable_link_phy(int lanenum, int linkrate) {
   return transmitter_control(DIG1TRANSMITTERCONTROL, &params);
 }
 
+static uint64_t read_tsc(void) {
+  uint32_t lo;
+  uint32_t hi;
+  __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  return ((uint64_t)hi << 32) | lo;
+}
+
+static void wait_for_transmitter(void) {
+  const uint64_t start = read_tsc();
+
+  /* Sonic's 13.60 wake blob waits through TSC delta 349,999,999. */
+  while (read_tsc() - start <= 349999999ULL)
+    __asm__ volatile("pause");
+}
+
 static int mp3_set_hdcp_packet(int be, int mode) {
-  mp3_req[0] = be;
-  mp3_req[1] = mode;
-  return mp3_invoke(21, mp3_req, mp3_rsp);
+  int *req = mp3_req_buffer();
+  req[0] = be;
+  req[1] = mode;
+  return mp3_invoke(21, req, mp3_rsp_buffer());
 }
 
 static int mp3_enable_output(int be, int mode) {
-  mp3_req[0] = be;
-  mp3_req[1] = mode;
-  return mp3_invoke(22, mp3_req, mp3_rsp);
+  int *req = mp3_req_buffer();
+  req[0] = be;
+  req[1] = mode;
+  return mp3_invoke(22, req, mp3_rsp_buffer());
 }
 #endif
 
@@ -195,11 +256,14 @@ void boot_linux(void) {
     memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000);
 
   // Enable DP phys link.
-  if (transmitter_control != NULL)
+  if (transmitter_control != NULL) {
     dp_enable_link_phy(4, 30);
+    wait_for_transmitter();
+  }
 
   // Initialize hdcp in mp3.
   if (mp3_initialize != NULL && mp3_invoke != NULL) {
+    clear_mp3_buffers();
     mp3_initialize(0);
     mp3_set_hdcp_packet(0, 1);
     mp3_enable_output(0, 1);
