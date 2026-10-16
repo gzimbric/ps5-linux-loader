@@ -69,6 +69,17 @@ struct dig_transmitter_control_parameters_v1_6 {
 static struct linux_info info;
 
 #if !SHELLCODE_1160_HEADLESS
+#if SHELLCODE_1160_DIAGNOSTIC
+#ifndef PS5_1160_DIAG_PRE_STAGE
+#define PS5_1160_DIAG_PRE_STAGE 5
+#endif
+_Static_assert(PS5_1160_DIAG_PRE_STAGE >= 0 &&
+                   PS5_1160_DIAG_PRE_STAGE <= 5,
+               "11.60 diagnostic pre-display stage is out of range");
+volatile const uint32_t ps5_diag_pre_stage_1160 =
+    PS5_1160_DIAG_PRE_STAGE;
+#endif
+
 #define MP3_REQ_WORDS 1281ULL
 #define MP3_RSP_WORDS 1282ULL
 #if SHELLCODE_1160_ONLY
@@ -252,6 +263,26 @@ void boot_linux(void) {
   install_hv_code();
 
 #if !SHELLCODE_1160_HEADLESS
+#if SHELLCODE_1160_DIAGNOSTIC
+  const uint32_t diag_pre_stage = ps5_diag_pre_stage_1160;
+
+  if (diag_pre_stage >= 1 && g_vbios != 0)
+    memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000);
+
+  if (diag_pre_stage >= 2 && transmitter_control != NULL) {
+    dp_enable_link_phy(4, 30);
+    wait_for_transmitter();
+  }
+
+  if (diag_pre_stage >= 3 && mp3_initialize != NULL && mp3_invoke != NULL) {
+    clear_mp3_buffers();
+    mp3_initialize(0);
+    if (diag_pre_stage >= 4)
+      mp3_set_hdcp_packet(0, 1);
+    if (diag_pre_stage >= 5)
+      mp3_enable_output(0, 1);
+  }
+#else
   if (g_vbios != 0)
     memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000);
 
@@ -268,6 +299,7 @@ void boot_linux(void) {
     mp3_set_hdcp_packet(0, 1);
     mp3_enable_output(0, 1);
   }
+#endif
 #endif
 
   // Copy bzImage and initrd into contiguous memory.

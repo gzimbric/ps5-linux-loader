@@ -52,11 +52,27 @@ const ps5_display_op_1160 ps5_display_ops_1160[29] = {
 _Static_assert(sizeof(ps5_display_ops_1160) == 29 * 0x18,
                "Sonic display-op table size changed");
 
+#if SHELLCODE_1160_DIAGNOSTIC
+#ifndef PS5_1160_DIAG_OP_LIMIT
+#define PS5_1160_DIAG_OP_LIMIT 29
+#endif
+_Static_assert(PS5_1160_DIAG_OP_LIMIT >= 0 && PS5_1160_DIAG_OP_LIMIT <= 29,
+               "11.60 diagnostic display-op limit is out of range");
+volatile const uint32_t ps5_diag_display_op_limit_1160 =
+    PS5_1160_DIAG_OP_LIMIT;
+#endif
+
 typedef uint64_t (*display_op1_fn)(uint32_t);
 typedef uint64_t (*display_op2_fn)(uint32_t, uint64_t);
 
 void run_ps5_display_ops_1160(void) {
-  for (uint32_t i = 0; i < 29; i++) {
+#if SHELLCODE_1160_DIAGNOSTIC
+  const uint32_t limit = ps5_diag_display_op_limit_1160;
+#else
+  const uint32_t limit = 29;
+#endif
+
+  for (uint32_t i = 0; i < limit; i++) {
     const ps5_display_op_1160 *op = &ps5_display_ops_1160[i];
     const uintptr_t target = args.ktext + op->ktext_offset;
 

@@ -26,6 +26,16 @@ CONFIG = ROOT / "include/config.h"
 WAKE_MAKEFILE = ROOT / "shellcode_kernel_port_1160/Makefile"
 WAKE_MAIN = ROOT / "shellcode_kernel/main.c"
 
+diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE")
+diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT")
+assert (diag_pre_text is None) == (diag_op_text is None)
+diagnostic_build = diag_pre_text is not None
+if diagnostic_build:
+    diag_pre_stage = int(diag_pre_text, 0)
+    diag_op_limit = int(diag_op_text, 0)
+    assert 0 <= diag_pre_stage <= 5
+    assert 0 <= diag_op_limit <= 29
+
 
 def u32(value: int) -> bytes:
     return value.to_bytes(4, "little")
@@ -215,6 +225,13 @@ expected_display_table = b"".join(
 display_table = elf_symbol_bytes(WAKE_ELF, "ps5_display_ops_1160")
 assert len(display_table) == 29 * 0x18
 assert display_table == expected_display_table
+if diagnostic_build:
+    assert elf_symbol_bytes(WAKE_ELF, "ps5_diag_pre_stage_1160") == struct.pack(
+        "<I", diag_pre_stage
+    )
+    assert elf_symbol_bytes(
+        WAKE_ELF, "ps5_diag_display_op_limit_1160"
+    ) == struct.pack("<I", diag_op_limit)
 
 # Do not accidentally ship the corresponding 13.60 offsets.
 for value in (0x39C9490, 0x2590B0, 0xCB92C0):
@@ -397,7 +414,11 @@ assert re.search(
     r"\badd\s+r12,QWORD PTR \[rax\+0x8\]", display_dispatch_body
 )
 assert len(re.findall(r"\bcall\s+r12\b", display_dispatch_body)) == 2
-assert re.search(r"\bcmp\s+ebp,0x1d", display_dispatch_body)
+if diagnostic_build:
+    assert "<ps5_diag_display_op_limit_1160>" in display_dispatch_body
+    assert re.search(r"\bcmp\s+ebp,r14d", display_dispatch_body)
+else:
+    assert re.search(r"\bcmp\s+ebp,0x1d", display_dispatch_body)
 patch_hv_disassembly = re.search(
     r"<patch_hv>:\n(.*?)(?=\n[0-9a-f]+ <boot_linux>:)",
     wake_disassembly,
@@ -510,7 +531,12 @@ assert u64(0x980000000) in inner_hv
 assert u32(0xC0115110) in inner_hv
 assert u32(0xFFFFFDFF) in inner_hv
 
+diag_label = (
+    f" diag-pre={diag_pre_stage} diag-ops={diag_op_limit}"
+    if diagnostic_build
+    else ""
+)
 print(
-    f"11.60 audit OK: elf={len(elf)} wake={len(wake)} "
+    f"11.60 audit OK:{diag_label} elf={len(elf)} wake={len(wake)} "
     f"inner_hv={len(inner_hv)} ap={len(ap)}"
 )
