@@ -26,9 +26,22 @@ CONFIG = ROOT / "include/config.h"
 WAKE_MAKEFILE = ROOT / "shellcode_kernel_port_1160/Makefile"
 WAKE_MAIN = ROOT / "shellcode_kernel/main.c"
 
+RUN15_ELF_SHA256 = (
+    "422b87ec39ca0edfce8dddd609c2eff1cc7adcb2732b7909b76fafbd60dd2336"
+)
+RUN15_WAKE_SHA256 = (
+    "83756ca9eddffbcf075cb3660ec80755263ce147793922a54414b57c15d11319"
+)
+RUN15_WAKE_ELF_SHA256 = (
+    "19c9e7fc396520bad8e49f8f4c97ffe10830d494a2fe9346d6d944ff6f09ac3a"
+)
+
 diag_mode_text = os.environ.get("PS5_1160_DIAGNOSTIC")
 assert diag_mode_text in (None, "0", "1")
 diagnostic_build = diag_mode_text == "1"
+release_check_text = os.environ.get("PS5_1160_RELEASE_CHECK")
+assert release_check_text in (None, "0", "1")
+release_check = release_check_text == "1"
 if diagnostic_build:
     diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE", "5")
     diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT", "29")
@@ -150,6 +163,18 @@ elf = ELF.read_bytes()
 wake = WAKE.read_bytes()
 inner_hv = INNER_HV.read_bytes()
 ap = AP.read_bytes()
+
+if release_check:
+    assert diagnostic_build, "release check requires PS5_1160_DIAGNOSTIC=1"
+    assert (diag_pre_stage, diag_op_limit, diag_clear_mp3_buffers) == (5, 29, 0), (
+        "release check requires the hardware-tested Run 15 gates",
+        diag_pre_stage,
+        diag_op_limit,
+        diag_clear_mp3_buffers,
+    )
+    assert hashlib.sha256(elf).hexdigest() == RUN15_ELF_SHA256
+    assert hashlib.sha256(wake).hexdigest() == RUN15_WAKE_SHA256
+    assert hashlib.sha256(WAKE_ELF.read_bytes()).hexdigest() == RUN15_WAKE_ELF_SHA256
 
 assert_raw_blob_is_pic(WAKE_ELF, WAKE)
 assert_raw_blob_is_pic(INNER_HV_ELF, INNER_HV)
@@ -541,6 +566,8 @@ assert len(re.findall(r"call\s+.*<memcpy>", patch_hv_body)) == 2
 # When the local live dumps are supplied, tie the portable structural audit to
 # the exact 11.60 bytes used for this release candidate.
 ktext_dump_path = os.environ.get("PS5_1160_KTEXT_DUMP")
+if release_check:
+    assert ktext_dump_path, "release check requires PS5_1160_KTEXT_DUMP"
 if ktext_dump_path:
     ktext_dump = Path(ktext_dump_path).read_bytes()
     assert len(ktext_dump) == 0xD30000
@@ -614,6 +641,8 @@ if ktext_dump_path:
     )
 
 hv_dump_path = os.environ.get("PS5_1160_HV_DUMP")
+if release_check:
+    assert hv_dump_path, "release check requires PS5_1160_HV_DUMP"
 if hv_dump_path:
     hv_dump = Path(hv_dump_path).read_bytes()
     assert len(hv_dump) == 0x62000

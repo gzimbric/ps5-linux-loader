@@ -16,12 +16,14 @@ used by Sonic's known-working 13.60 ELF:
    the authenticated native 11.60 homologs; and
 9. rendezvous all CPUs into `vmmcall(1)`.
 
-Run 7 completed the hardware proof on an exact retail 11.60 regular PS5.
-Linux became reachable over Ethernet and an SSH session confirmed the running
-kernel and system after rest-mode resume. This validates the Sonic-style
-carrier, resume pivots, HV transition, and Linux transfer without relying on
-UART. Static, build, byte-provenance, and position-independence checks remain
-automated for every candidate.
+Run 15 completed the full hardware proof on an exact retail 11.60 regular PS5.
+The same rest-mode resume produced directly observed physical HDMI output and
+authenticated Linux userspace over wired SSH. This validates the complete
+Sonic-equivalent sequence as one containing path: carrier, resume pivots, HV
+transition, Linux transfer, MP3 commands 21/22, and the 29-record display
+table. No UART or per-operation return telemetry was available, so Run 15 does
+not identify the minimal display subset. Static, build, byte-provenance, and
+position-independence checks remain automated for the release configuration.
 
 ## Deliberate 11.60 substitutions
 
@@ -79,16 +81,30 @@ automated for every candidate.
 
 ## Build and audit
 
-The PS5 payload SDK and an x86-64 ELF cross-toolchain are required. On the
-macOS toolchain used for the release candidate:
+The PS5 payload SDK, an x86-64 ELF cross-toolchain, and the authenticated 11.60
+kernel-text and extended-HV dumps are required for the release check. The
+top-level Makefile now defaults to the exact hardware-tested Run 15 gates:
+`PS5_1160_DIAGNOSTIC=1`, `PRE=5`, `OP=29`, and clear disabled. On the macOS
+toolchain used for the release:
 
 ```sh
 PATH=/opt/homebrew/opt/llvm/bin:$PATH \
+PS5_1160_KTEXT_DUMP=/absolute/path/to/ps5-11.60-ktext.bin \
+PS5_1160_HV_DUMP=/absolute/path/to/ps5-11.60-hv-extended-62800000.bin \
 make linux-1160-check \
   PS5_PAYLOAD_SDK=/absolute/path/to/ps5-payload-sdk
 ```
 
-The output is `bin/ps5-linux-loader-1160.elf`.
+The output is `bin/ps5-linux-loader-1160.elf`. The release check pins all
+three generated identities to the hardware-tested Run 15 artifacts:
+
+- outer ELF: `422b87ec39ca0edfce8dddd609c2eff1cc7adcb2732b7909b76fafbd60dd2336`;
+- wake blob: `83756ca9eddffbcf075cb3660ec80755263ce147793922a54414b57c15d11319`;
+- wake ELF: `19c9e7fc396520bad8e49f8f4c97ffe10830d494a2fe9346d6d944ff6f09ac3a`.
+
+Changing a diagnostic gate changes a tracked build stamp and forces the wake
+blob and outer payload to rebuild. Such builds remain useful for controlled
+experiments, but `linux-1160-check` rejects them as release artifacts.
 
 `linux-1160-check` fails unless all of the following hold:
 
@@ -118,32 +134,35 @@ audited 12,702,720-byte `bzImage` and the final 54,376,639-byte `initrd.img`.
 
 ## Hardware validation status
 
-Run 7 booted Linux on retail firmware 11.60 and was verified through live
-Ethernet, ping, and SSH evidence. Its initial black display was diagnosed
-inside the running system: the kernel requested uncompressed Cyan Skillfish
-AMDGPU firmware while the image exposed compressed firmware files. That
-display symptom did not indicate a failed loader transition.
+Runs 10, 12, 14, and 15 reached authenticated Linux userspace over wired SSH.
+Run 14 isolated the direct `mp3_initialize(0)` call with the redundant
+wake-time buffer clear disabled and booted successfully without visible HDMI.
+Run 15 retained that no-clear behavior, matched Sonic's response-first work
+buffer geometry and two-layer dispatcher, enabled commands 21/22 and all 29
+display records, and produced physical output plus authenticated Linux in the
+same cycle.
 
-Run 9 pairs the hardware-proven Linux carrier with the final 54,376,639-byte
-initrd and Sonic's complete pre-Linux display handoff, translated to exact
-native 11.60 targets. Its dump-backed audit and two clean, byte-identical
-builds are complete. A cold boot has not yet verified Run 9, so Run 7 remains
-the hardware-proven Linux boot and Run 9 is the pending display-validation
-candidate.
+The exact tested Run 15 source was local commit
+`815b1fdc5c76088762e42ad0ad80b0099a54e60d`. Its source tree is byte-identical
+to published commit `e0b7a2e9ac1fe6ec8de8f1883ba9470ad7ee690d` on branch
+`firmware-11.60-sonic-display`; both resolve to tree
+`97e96d7d6fbec038812e0a1f9919b1d7c91a9410`. A fresh published-tree build
+with the release configuration and authenticated dumps reproduced all three
+Run 15 hashes above.
 
 ## Hardware test boundary
 
 Use only on an exact retail 11.60 regular PS5, with the same USB Linux files
-and rest-mode procedure documented by upstream. This candidate mutates
+and rest-mode procedure documented by upstream. This release mutates
 IDT/TSS/FACS state and the hypervisor path. If it refuses because carrier state
 is stale, cold reboot; do not retry it in the same GameOS boot.
 
-UART is optional. Run 7 established that Ethernet reachability and SSH provide
-an authoritative success signal when the display is black. For Run 9, verify
-the Linux transition over the network independently of the monitor, then
-confirm that Sonic's display handoff and the integrated AMDGPU media state
-survive a cold boot. Do not describe display as verified until that test
-passes.
+UART is optional. Authenticate Linux over wired SSH independently of monitor
+state; a white light, ping, DRM connector state, or modeset return alone is not
+a Linux or physical-display pass. Run 15 is one successful full-path cycle,
+not a repeatability, long-duration, or multi-monitor campaign. The physical
+display result is the operator's direct observation, while Linux, network, and
+DRM state are separately machine-captured evidence.
 
 The older `wake-1160` and `stage2a-1160-check` targets remain available as
 non-arming staging diagnostics. They are not the full port.

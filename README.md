@@ -2,6 +2,14 @@
 
 **ps5-linux** leverages patched HV vulnerabilities to transform your **PS5 Phat and Slim** console running **3.00-7.61 firmwares** into a highly capable Linux PC, unlocking its full hardware potential for desktop use. Powered by 8 CPU cores (16 threads) at **3.5 GHz** and a GPU at **2.23 GHz**, it provides enough performance to run Steam games and various emulators with impressive fluidity.
 
+> **Experimental firmware 11.60 branch:** `firmware-11.60-sonic-display`
+> contains a source-only backport for an exact regular retail PS5 on raw
+> firmware `0x11600005`. One full Run 15 cycle produced physical HDMI output
+> and authenticated Linux over wired SSH. This is not general upstream 11.60
+> support; PS5 Pro, other 11.xx revisions, repeatability, and multi-monitor
+> coverage are unverified. See [PORTING_1160.md](PORTING_1160.md) for the exact
+> build, evidence boundary, and fail-closed hardware requirements.
+
 Features:
 
 - HDMI 4K60 video and audio output

@@ -1,5 +1,16 @@
 .PHONY: all clean wake-1160 stage2a-1160 stage2a-1160-check \
-	linux-1160 linux-1160-check break-hv-1160-check
+	linux-1160 linux-1160-check break-hv-1160-check FORCE_1160_WAKE
+
+# Run 15, the hardware-validated 11.60 Linux/display build, was compiled with
+# the diagnostic gates present and set to the complete Sonic path.  Keep that
+# exact configuration as the recursive-build default and export it so the
+# audit evaluates the same mode that the wake sub-build compiled.
+PS5_1160_DIAGNOSTIC ?= 1
+PS5_1160_DIAG_PRE_STAGE ?= 5
+PS5_1160_DIAG_OP_LIMIT ?= 29
+PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 0
+export PS5_1160_DIAGNOSTIC PS5_1160_DIAG_PRE_STAGE
+export PS5_1160_DIAG_OP_LIMIT PS5_1160_DIAG_CLEAR_MP3_BUFFERS
 
 # The exact standalone wake-1160 goal has no SDK inputs. Default, ordinary,
 # and mixed-goal builds retain the existing SDK include and behavior.
@@ -80,7 +91,7 @@ linux-1160-check: linux-1160
 	@$(HOSTCC) -std=c11 -Wall -Wextra -Werror \
 		tests/test_shellcode_kernel_args.c -o build/tests/test_shellcode_kernel_args
 	@build/tests/test_shellcode_kernel_args
-	@python3 tests/audit_1160_port.py
+	@PS5_1160_RELEASE_CHECK=1 python3 tests/audit_1160_port.py
 
 $(SC_0607_H):
 	$(MAKE) -C shellcode_0607
@@ -100,7 +111,9 @@ $(SC_K_H):
 $(SC_K_1160_H):
 	$(MAKE) -C shellcode_kernel_1160 shellcode_kernel_1160.h
 
-$(SC_K_PORT_1160_H): $(SC_HV_PORT_1160_H)
+FORCE_1160_WAKE:
+
+$(SC_K_PORT_1160_H): $(SC_HV_PORT_1160_H) FORCE_1160_WAKE
 	$(MAKE) -C shellcode_kernel_port_1160
 
 $(OBJS): %.o: %.c

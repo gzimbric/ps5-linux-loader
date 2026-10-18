@@ -3,6 +3,7 @@ OBJCOPY = x86_64-elf-objcopy
 NM      = x86_64-elf-nm
 READELF = x86_64-elf-readelf
 
+PS5_1160_DIAGNOSTIC ?= 1
 PS5_1160_DIAG_PRE_STAGE ?= 5
 PS5_1160_DIAG_OP_LIMIT ?= 29
 PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 0
@@ -24,10 +25,28 @@ TARGET   := shellcode_kernel_port_1160.elf
 TEXT_BIN := shellcode_kernel_port_1160.bin
 DUMP     := shellcode_kernel_port_1160.h
 OBJ      := main.o boot_linux.o display_ops_1160.o utils.o
+BUILD_CONFIG := .build-config
 
-.PHONY: all check clean
+.PHONY: all check clean FORCE
 
 all: $(DUMP)
+
+FORCE:
+
+$(BUILD_CONFIG): FORCE
+	@printf '%s\n' \
+		'PS5_1160_DIAGNOSTIC=$(PS5_1160_DIAGNOSTIC)' \
+		'PS5_1160_DIAG_PRE_STAGE=$(PS5_1160_DIAG_PRE_STAGE)' \
+		'PS5_1160_DIAG_OP_LIMIT=$(PS5_1160_DIAG_OP_LIMIT)' \
+		'PS5_1160_DIAG_CLEAR_MP3_BUFFERS=$(PS5_1160_DIAG_CLEAR_MP3_BUFFERS)' \
+		> $(BUILD_CONFIG).tmp
+	@if ! cmp -s $(BUILD_CONFIG).tmp $(BUILD_CONFIG); then \
+		mv $(BUILD_CONFIG).tmp $(BUILD_CONFIG); \
+	else \
+		rm -f $(BUILD_CONFIG).tmp; \
+	fi
+
+$(OBJ): $(BUILD_CONFIG)
 
 main.o: ../shellcode_kernel/main.c ../shellcode_kernel/main.h \
 	../shellcode_kernel/shellcode_kernel_args_validate.h \
@@ -65,4 +84,5 @@ check: $(DUMP)
 	@! $(NM) -u $(TARGET) | grep -Eq 'hv_defeat_0304|mp3_|transmitter'
 
 clean:
-	rm -f $(OBJ) $(TARGET) $(TEXT_BIN) $(DUMP)
+	rm -f $(OBJ) $(TARGET) $(TEXT_BIN) $(DUMP) \
+		$(BUILD_CONFIG) $(BUILD_CONFIG).tmp
