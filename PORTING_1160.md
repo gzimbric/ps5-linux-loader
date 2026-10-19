@@ -110,7 +110,7 @@ The 13.60 support from upstream (8cda4c1) also changes the stock 13.60 inner
 HV so Linux only gets `[0x00100000, 0x01000000)` as low RAM and sees
 `[0x01000000, 0x40000000)` as reserved. Run 15 keeps the original map
 (`[0x00100000, 0x3fffc000)` RAM, `[0x3fffc000, 0x40000000)` reserved). The
-same reservation is available for 11.60 as a separate A/B build:
+same reservation is available for 11.60 as a separate opt-in build:
 
 ```sh
 PATH=/opt/homebrew/opt/llvm/bin:$PATH \
@@ -120,16 +120,27 @@ make linux-1160-dma-e820-check \
   PS5_PAYLOAD_SDK=/absolute/path/to/ps5-payload-sdk
 ```
 
-This writes `bin/ps5-linux-loader-1160-dma-e820.elf`
-(`2e1758a2d013305bcb9faa0eb3adf18c34ed76ad85313dd945719c8bf2a0c9c0`). It
+This writes `bin/ps5-linux-loader-1160-dma-e820.elf` (169,872 bytes,
+`2e1758a2d013305bcb9faa0eb3adf18c34ed76ad85313dd945719c8bf2a0c9c0`). It
 differs from Run 15 only in the three E820 operands inside the inner HV (and
 so in the wake blob that carries it and the outer build id). It is not the
-Run 15 release and does not pass that hash gate. Expect about 1008 MiB less
-usable RAM. The gate follows the target name: `linux-1160` always builds the
-original map, setting `PS5_1160_DMA_E820_SAFE` on the command line is
-refused, and the two targets have to be built in separate `make` runs because
-they share the nested blobs. Test it with the unchanged Ubuntu 24.04 image and
-nothing else changed.
+Run 15 release and does not pass that hash gate. `linux-1160-dma-e820-check`
+audits the new E820 operands and prints the ELF hash, but does not pin it.
+The hash above came from Homebrew LLVM 23.1.0, x86_64-elf-gcc 16.2.0 and
+binutils 2.47 on macOS; other toolchain versions are not expected to
+reproduce it. Expect about 1008 MiB less usable RAM. The gate follows the
+target name: `linux-1160` always builds the original map, setting
+`PS5_1160_DMA_E820_SAFE` on the command line is refused, and the two targets
+have to be built in separate `make` runs because they share the nested blobs.
+
+Run 18 booted this ELF once with a CachyOS image carrying the exact Run 15
+boot files; see the hardware validation status below. It has not been booted
+with the Ubuntu 24.04 image. For testers, the ELF is attached to the
+[`firmware-11.60-dma-e820-run18`](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-dma-e820-run18)
+release. Check its SHA-256 against the value above before sending it. The
+[tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/ubuntu2404-tester-guide.md)
+in the porting repo covers the Ubuntu 24.04 image, the boot steps and what to
+report.
 
 `linux-1160-check` fails unless all of the following hold:
 
@@ -174,6 +185,29 @@ to published commit `e0b7a2e9ac1fe6ec8de8f1883ba9470ad7ee690d` on branch
 `97e96d7d6fbec038812e0a1f9919b1d7c91a9410`. A fresh published-tree build
 with the release configuration and authenticated dumps reproduced all three
 Run 15 hashes above.
+
+Run 18 booted the DMA E820 build once on the same console, from cold boot,
+with automatic Rest Mode and wake. The USB was a CachyOS image built from the
+official `ps5-linux-image` CachyOS release, with the exact Run 15 `bzImage`,
+`initrd.img`, `cmdline.txt` and `vram.txt` on the FAT partition. The ELF was
+sent once, and the loader's 2,832 bytes of output were byte-identical to
+Runs 16 and 17. Linux 7.1.7 reached authenticated wired SSH. The kernel's
+e820 map had System RAM at `[0x00100000, 0x01000000)`, device reserved at
+`[0x01000000, 0x40000000)` and System RAM again from `0x40000000`, which is
+the intended reservation. MemTotal was 14,783,608 kB, about 14.1 GiB. Three
+4 GiB files were written to the USB root and hashed, caches were dropped, and
+all three were re-read with matching hashes (12 GiB, about two minutes). A
+scan of 22 minutes of kernel log found no I/O, ext4, USB reset, xHCI, IOMMU or
+machine check errors. See the
+[Run 18 evidence](https://github.com/gzimbric/ps5-linux-porting/blob/main/evidence/11.60-cachyos-run-18-dma-e820.md).
+
+Run 18 is one boot on one console, with no A/B control. The Run 15 ELF was
+never put through the same I/O check, and the read/write errors reported by
+testers have not been reproduced on this console, so Run 18 does not show
+that the reservation fixes them. The I/O check was short and covered only the
+USB root. DRM reported a connected 1920x1080 output and a desktop session
+started, but the picture was not recorded as directly observed, so Run 18 is
+not a display result. Run 15 remains the release baseline.
 
 ## Hardware test boundary
 

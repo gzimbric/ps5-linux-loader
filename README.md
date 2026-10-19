@@ -9,6 +9,10 @@
 > support; PS5 Pro, other 11.xx revisions, repeatability, and multi-monitor
 > coverage are unverified. See [PORTING_1160.md](PORTING_1160.md) for the exact
 > build, evidence boundary, and fail-closed hardware requirements.
+>
+> This `firmware-11.60-dma-e820` branch adds an opt-in build with upstream's
+> 13.60 low-memory DMA reservation. Run 18 booted it once, and its ELF is
+> attached to the `firmware-11.60-dma-e820-run18` release for testers.
 
 Features:
 
