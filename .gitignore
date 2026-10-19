@@ -5,6 +5,7 @@ shellcode_hv/shellcode_hv.h
 shellcode_kernel_1160/shellcode_kernel_1160.h
 shellcode_break_hv/break_hv.h
 shellcode_hv_port_1160/shellcode_hv_port_1160.h
+shellcode_hv_port_1160/.build-config*
 shellcode_kernel_port_1160/shellcode_kernel_port_1160.h
 shellcode_kernel_port_1160/.build-config*
 build/

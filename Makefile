@@ -1,5 +1,7 @@
 .PHONY: all clean wake-1160 stage2a-1160 stage2a-1160-check \
-	linux-1160 linux-1160-check break-hv-1160-check FORCE_1160_WAKE
+	linux-1160 linux-1160-check linux-1160-dma-e820 \
+	linux-1160-dma-e820-check break-hv-1160-check FORCE_1160_HV \
+	FORCE_1160_WAKE FORCE_1160_DMA_E820
 
 # Run 15, the hardware-validated 11.60 Linux/display build, was compiled with
 # the diagnostic gates present and set to the complete Sonic path.  Keep that
@@ -9,8 +11,26 @@ PS5_1160_DIAGNOSTIC ?= 1
 PS5_1160_DIAG_PRE_STAGE ?= 5
 PS5_1160_DIAG_OP_LIMIT ?= 29
 PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 0
+PS5_1160_DMA_E820_SAFE ?= 0
 export PS5_1160_DIAGNOSTIC PS5_1160_DIAG_PRE_STAGE
 export PS5_1160_DIAG_OP_LIMIT PS5_1160_DIAG_CLEAR_MP3_BUFFERS
+export PS5_1160_DMA_E820_SAFE
+
+# The E820 gate follows the target name.  A command-line value would also be
+# forwarded to the nested HV build through MAKEFLAGS and could put the DMA map
+# into the Run 15 file name, so it is rejected here.
+ifeq ($(origin PS5_1160_DMA_E820_SAFE),command line)
+$(error use linux-1160-dma-e820 instead of setting PS5_1160_DMA_E820_SAFE)
+endif
+
+# The DMA E820 A/B build shares the nested HV and wake blobs with the Run 15
+# build, so one make invocation can only produce one of them correctly.
+DMA_E820_GOALS := linux-1160-dma-e820 linux-1160-dma-e820-check
+ifneq ($(filter $(DMA_E820_GOALS),$(MAKECMDGOALS)),)
+ifneq ($(filter-out $(DMA_E820_GOALS),$(MAKECMDGOALS)),)
+$(error build $(DMA_E820_GOALS) in a separate make invocation)
+endif
+endif
 
 # The exact standalone wake-1160 goal has no SDK inputs. Default, ordinary,
 # and mixed-goal builds retain the existing SDK include and behavior.
@@ -31,11 +51,13 @@ STAGE2A_OBJS := $(patsubst source/%.c,build/stage2a/%.o,$(STAGE2A_SRC))
 STAGE2A_NM ?= x86_64-elf-nm
 HOSTCC ?= cc
 PORT_1160_BIN := bin/ps5-linux-loader-1160.elf
+PORT_1160_DMA_E820_BIN := bin/ps5-linux-loader-1160-dma-e820.elf
 PORT_1160_SRC := $(filter-out source/hv_defeat_0304.c \
 	source/hv_defeat_0506.c source/hv_defeat_0607.c \
 	source/hv_defeat_13xx.c source/khook.c source/shellcode_1360.c,\
 	$(wildcard source/*.c))
 PORT_1160_OBJS := $(patsubst source/%.c,build/1160/%.o,$(PORT_1160_SRC))
+PORT_1160_DMA_E820_OBJS := $(patsubst source/%.c,build/1160-dma-e820/%.o,$(PORT_1160_SRC))
 
 CFLAGS  := -std=c23 -Wall -Iinclude -Ishellcode_hv -Ishellcode_kernel
 LDFLAGS := -Wl,--build-id=sha1
@@ -78,8 +100,14 @@ stage2a-1160-check: stage2a-1160
 break-hv-1160-check:
 	$(MAKE) -C shellcode_break_hv check
 
+# The Run 15 release name always carries the original E820 map.
+linux-1160 linux-1160-check: override PS5_1160_DMA_E820_SAFE = 0
 linux-1160: break-hv-1160-check $(SC_BREAK_1160_H) \
 	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(PORT_1160_BIN)
+
+linux-1160-dma-e820 linux-1160-dma-e820-check: override PS5_1160_DMA_E820_SAFE = 1
+linux-1160-dma-e820: break-hv-1160-check $(SC_BREAK_1160_H) \
+	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(PORT_1160_DMA_E820_BIN)
 
 linux-1160-check: linux-1160
 	$(MAKE) -C shellcode_hv_port_1160 check
@@ -95,13 +123,33 @@ linux-1160-check: linux-1160
 	@build/tests/test_shellcode_kernel_args
 	@PS5_1160_RELEASE_CHECK=1 python3 tests/audit_1160_port.py
 
+# Controlled A/B build for the low-memory DMA reservation used by the official
+# 13.60 loader.  It has its own output name and does not satisfy the Run 15
+# release hash gate.
+linux-1160-dma-e820-check: linux-1160-dma-e820
+	$(MAKE) -C shellcode_hv_port_1160 check
+	$(MAKE) -C shellcode_kernel_port_1160 check
+	@$(NM) -an $(PORT_1160_DMA_E820_BIN) | grep -q ' hv_defeat_1160$$'
+	@strings -a $(PORT_1160_DMA_E820_BIN) | grep -q \
+		'11.60 Sonic-style Linux wake chain armed'
+	@python3 -c 'from pathlib import Path; p=Path("shellcode_kernel_port_1160/shellcode_kernel_port_1160.bin").read_bytes(); assert p.count(bytes.fromhex("aa11aa11aa11aa11")) == 1'
+	@test "$$(wc -c < shellcode_kernel_port_1160/shellcode_kernel_port_1160.bin | tr -d ' ')" -le 20480
+	@mkdir -p build/tests
+	@$(HOSTCC) -std=c11 -Wall -Wextra -Werror \
+		tests/test_shellcode_kernel_args.c -o build/tests/test_shellcode_kernel_args
+	@build/tests/test_shellcode_kernel_args
+	@PS5_1160_ELF=$(PORT_1160_DMA_E820_BIN) python3 tests/audit_1160_port.py
+	@sha256sum $(PORT_1160_DMA_E820_BIN)
+
 $(SC_0607_H):
 	$(MAKE) -C shellcode_0607
 
 $(SC_HV_H):
 	$(MAKE) -C shellcode_hv
 
-$(SC_HV_PORT_1160_H):
+FORCE_1160_HV:
+
+$(SC_HV_PORT_1160_H): FORCE_1160_HV
 	$(MAKE) -C shellcode_hv_port_1160
 
 $(SC_BREAK_1160_H):
@@ -132,6 +180,12 @@ $(PORT_1160_OBJS): build/1160/%.o: source/%.c $(SC_HV_PORT_1160_H) \
 	$(CC) $(CFLAGS) -DFW_1160_PORT=1 -ffunction-sections \
 		-fdata-sections -c -o $@ $<
 
+$(PORT_1160_DMA_E820_OBJS): build/1160-dma-e820/%.o: source/%.c \
+	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(SC_BREAK_1160_H)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DFW_1160_PORT=1 -ffunction-sections \
+		-fdata-sections -c -o $@ $<
+
 $(BIN): $(OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(OBJS) $(LDFLAGS) -o $@
@@ -144,9 +198,16 @@ $(PORT_1160_BIN): $(PORT_1160_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(PORT_1160_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
 
+FORCE_1160_DMA_E820:
+	@rm -f $(PORT_1160_DMA_E820_BIN)
+
+$(PORT_1160_DMA_E820_BIN): FORCE_1160_DMA_E820 $(PORT_1160_DMA_E820_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(PORT_1160_DMA_E820_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
+
 clean:
-	rm -f $(BIN) $(STAGE2A_BIN) $(PORT_1160_BIN) $(OBJS) \
-		$(STAGE2A_OBJS) $(PORT_1160_OBJS)
+	rm -f $(BIN) $(STAGE2A_BIN) $(PORT_1160_BIN) $(PORT_1160_DMA_E820_BIN) \
+		$(OBJS) $(STAGE2A_OBJS) $(PORT_1160_OBJS) $(PORT_1160_DMA_E820_OBJS)
 	rm -f build/tests/test_shellcode_kernel_args
 	$(MAKE) -C shellcode_0607 clean
 	$(MAKE) -C shellcode_hv clean

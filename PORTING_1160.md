@@ -106,6 +106,31 @@ Changing a diagnostic gate changes a tracked build stamp and forces the wake
 blob and outer payload to rebuild. Such builds remain useful for controlled
 experiments, but `linux-1160-check` rejects them as release artifacts.
 
+The 13.60 support from upstream (8cda4c1) also changes the stock 13.60 inner
+HV so Linux only gets `[0x00100000, 0x01000000)` as low RAM and sees
+`[0x01000000, 0x40000000)` as reserved. Run 15 keeps the original map
+(`[0x00100000, 0x3fffc000)` RAM, `[0x3fffc000, 0x40000000)` reserved). The
+same reservation is available for 11.60 as a separate A/B build:
+
+```sh
+PATH=/opt/homebrew/opt/llvm/bin:$PATH \
+PS5_1160_KTEXT_DUMP=/absolute/path/to/ps5-11.60-ktext.bin \
+PS5_1160_HV_DUMP=/absolute/path/to/ps5-11.60-hv-extended-62800000.bin \
+make linux-1160-dma-e820-check \
+  PS5_PAYLOAD_SDK=/absolute/path/to/ps5-payload-sdk
+```
+
+This writes `bin/ps5-linux-loader-1160-dma-e820.elf`
+(`2e1758a2d013305bcb9faa0eb3adf18c34ed76ad85313dd945719c8bf2a0c9c0`). It
+differs from Run 15 only in the three E820 operands inside the inner HV (and
+so in the wake blob that carries it and the outer build id). It is not the
+Run 15 release and does not pass that hash gate. Expect about 1008 MiB less
+usable RAM. The gate follows the target name: `linux-1160` always builds the
+original map, setting `PS5_1160_DMA_E820_SAFE` on the command line is
+refused, and the two targets have to be built in separate `make` runs because
+they share the nested blobs. Test it with the unchanged Ubuntu 24.04 image and
+nothing else changed.
+
 `linux-1160-check` fails unless all of the following hold:
 
 - the exact startup-AP donor hash and size match;

@@ -12,7 +12,7 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ELF = ROOT / "bin/ps5-linux-loader-1160.elf"
+ELF = Path(os.environ.get("PS5_1160_ELF", ROOT / "bin/ps5-linux-loader-1160.elf"))
 WAKE = ROOT / "shellcode_kernel_port_1160/shellcode_kernel_port_1160.bin"
 INNER_HV = ROOT / "shellcode_hv_port_1160/shellcode_hv_port_1160.bin"
 AP = ROOT / "shellcode_break_hv/break_hv.bin"
@@ -42,6 +42,9 @@ diagnostic_build = diag_mode_text == "1"
 release_check_text = os.environ.get("PS5_1160_RELEASE_CHECK")
 assert release_check_text in (None, "0", "1")
 release_check = release_check_text == "1"
+dma_e820_safe_text = os.environ.get("PS5_1160_DMA_E820_SAFE", "0")
+assert dma_e820_safe_text in ("0", "1")
+dma_e820_safe = dma_e820_safe_text == "1"
 if diagnostic_build:
     diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE", "5")
     diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT", "29")
@@ -166,6 +169,7 @@ ap = AP.read_bytes()
 
 if release_check:
     assert diagnostic_build, "release check requires PS5_1160_DIAGNOSTIC=1"
+    assert not dma_e820_safe, "Run 15 release check requires the original E820 map"
     assert (diag_pre_stage, diag_op_limit, diag_clear_mp3_buffers) == (5, 29, 0), (
         "release check requires the hardware-tested Run 15 gates",
         diag_pre_stage,
@@ -668,6 +672,31 @@ assert u64(0x980000000) in inner_hv
 assert u32(0xC0115110) in inner_hv
 assert u32(0xFFFFFDFF) in inner_hv
 
+# The official 13.60 loader now quarantines 16 MiB through 1 GiB for DMA.
+# Verify the emitted boot_linux instructions, not only the source switch, so a
+# stale nested blob cannot accidentally pass the candidate audit.
+inner_hv_boot_linux = tool_output(
+    "x86_64-elf-objdump", "-d", "-Mintel", "--disassemble=boot_linux", INNER_HV_ELF
+)
+old_e820_values = ("0x3fefc000", "0x3fffc000")
+safe_e820_values = ("0xf00000", "0x1000000", "0x3f000000")
+
+
+def exact_hex_count(text: str, value: str) -> int:
+    return len(re.findall(rf"(?<![0-9a-f]){re.escape(value)}(?![0-9a-f])", text))
+
+
+if dma_e820_safe:
+    for value in safe_e820_values:
+        assert exact_hex_count(inner_hv_boot_linux, value) == 1, value
+    for value in old_e820_values:
+        assert exact_hex_count(inner_hv_boot_linux, value) == 0, value
+else:
+    for value in old_e820_values:
+        assert exact_hex_count(inner_hv_boot_linux, value) == 1, value
+    for value in safe_e820_values:
+        assert exact_hex_count(inner_hv_boot_linux, value) == 0, value
+
 diag_label = (
     f" diag-pre={diag_pre_stage} diag-ops={diag_op_limit} "
     f"diag-clear-mp3={diag_clear_mp3_buffers}"
@@ -676,5 +705,5 @@ diag_label = (
 )
 print(
     f"11.60 audit OK:{diag_label} elf={len(elf)} wake={len(wake)} "
-    f"inner_hv={len(inner_hv)} ap={len(ap)}"
+    f"inner_hv={len(inner_hv)} ap={len(ap)} dma-e820-safe={int(dma_e820_safe)}"
 )
