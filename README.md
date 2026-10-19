@@ -168,6 +168,14 @@ If the LED is white, but you still have a blackscreen then:
 
 If none of this helps, please report the issue in our [Discord server](https://discord.gg/PeMGVB7BAm) and provide your EDID information.
 
+### Firmware 11.60 CI builds
+
+On this fork, GitHub Actions builds `make linux-1160` on every push and on manual runs ([loader-1160.yml](.github/workflows/loader-1160.yml)), plus `make linux-1160-dma-e820` on branches that have that target. Each build uploads its ELF with `SHA256SUMS` and `build-info.txt` as a workflow artifact.
+
+These builds are for build checks and testers. They do not replace the release ELFs (Run 15 `422b87ec...`, Run 18 DMA E820 `2e1758a2...`), which were built on macOS with Homebrew LLVM 23.1.0, x86_64-elf-gcc 16.2.0 and binutils 2.47. CI uses whatever Homebrew currently ships, so the file hash will usually differ: clang and lld record their version in `.comment`, and the build ID changes with it. To check the code itself, CI also hashes the ELF with those two sections removed and compares it to the release (`f9002988...` for Run 15, `6737e735...` for Run 18). The run summary shows both hashes. Use the pinned release ELFs for hardware runs.
+
+CI does not run the `*-check` targets. The release check needs the private 11.60 ktext and HV dumps, and they are never uploaded. CI runs `tests/audit_1160_port.py` without them instead, which covers the structural checks but not the release hash pins.
+
 
 ## First Boot
 

@@ -1,0 +1,185 @@
+name: 11.60 loader
+run-name: 11.60 loader (${{ github.ref_name }})
+
+# Builds the firmware 11.60 loader ELFs on every push and on manual runs:
+# linux-1160 always, and linux-1160-dma-e820 on branches that have it. Each
+# job runs the structural audit that needs no firmware dumps and uploads the
+# ELF with SHA256SUMS and build-info.txt as a workflow artifact.
+#
+# These artifacts are build checks for testers, not releases. The Run 15
+# release ELF (422b87ec...) was built on macOS with Homebrew LLVM 23.1.0,
+# x86_64-elf-gcc 16.2.0 and binutils 2.47. This job installs whatever Homebrew
+# ships at the time, so the file hash will usually differ: clang and lld write
+# their version into .comment, and the build ID follows from that. The job
+# also hashes the ELF with .comment and .note.gnu.build-id removed and compares
+# that with the release. A match means the code and data are byte-identical to
+# the release. Hardware runs should still use the pinned release ELF.
+#
+# linux-1160-check is not run here. Its release audit needs the private 11.60
+# ktext and HV dumps, which must never be uploaded to GitHub. Compiling does
+# not read them.
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: loader-1160-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The SDK release the Run 15 build used.
+  PS5_PAYLOAD_SDK_VERSION: v0.44
+  PS5_PAYLOAD_SDK_SHA256: 4d06eab777bb135705b5a6816688c9132efb246093fe606ac488ab6cf65ca5b0
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # release_sha256 is the hardware-tested file. code_sha256 is the same
+          # file with .comment and .note.gnu.build-id removed. A target that
+          # the branch's Makefile does not have is skipped.
+          - target: linux-1160
+            elf: bin/ps5-linux-loader-1160.elf
+            dma_e820: 0
+            release: Run 15
+            release_sha256: 422b87ec39ca0edfce8dddd609c2eff1cc7adcb2732b7909b76fafbd60dd2336
+            code_sha256: f900298838f8a8b83954fdae5c5eb9ff6a9c628add6437bc10790e905aba8503
+          - target: linux-1160-dma-e820
+            elf: bin/ps5-linux-loader-1160-dma-e820.elf
+            dma_e820: 1
+            release: Run 18 DMA E820
+            release_sha256: 2e1758a2d013305bcb9faa0eb3adf18c34ed76ad85313dd945719c8bf2a0c9c0
+            code_sha256: 6737e7352b3b6bdbad83c4e6b4980c07926f9624b3e4a3dfe52f2a5ea0f3038c
+    env:
+      TARGET: ${{ matrix.target }}
+      ELF: ${{ matrix.elf }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check target
+        id: target
+        run: |
+          if grep -Eq "^${TARGET}:" Makefile; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=$TARGET::not in this branch's Makefile, skipped"
+          fi
+
+      - name: Install toolchain
+        if: steps.target.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          brew install llvm lld x86_64-elf-gcc
+          # Homebrew's llvm is keg-only. The SDK wrappers find it through
+          # LLVM_CONFIG and find ld.lld through brew --prefix lld.
+          llvm_bin="$(brew --prefix llvm)/bin"
+          echo "$llvm_bin" >> "$GITHUB_PATH"
+          echo "LLVM_CONFIG=$llvm_bin/llvm-config" >> "$GITHUB_ENV"
+
+      - name: Fetch ps5-payload-sdk
+        if: steps.target.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          zip="$RUNNER_TEMP/ps5-payload-sdk.zip"
+          curl -fsSL -o "$zip" \
+            "https://github.com/ps5-payload-dev/sdk/releases/download/$PS5_PAYLOAD_SDK_VERSION/ps5-payload-sdk.zip"
+          echo "$PS5_PAYLOAD_SDK_SHA256  $zip" | shasum -a 256 -c
+          unzip -q "$zip" -d "$RUNNER_TEMP"
+          echo "PS5_PAYLOAD_SDK=$RUNNER_TEMP/ps5-payload-sdk" >> "$GITHUB_ENV"
+
+      - name: Build
+        if: steps.target.outputs.present == 'true'
+        run: make "$TARGET"
+
+      - name: Audit without dumps
+        if: steps.target.outputs.present == 'true'
+        env:
+          PS5_1160_DIAGNOSTIC: 1
+          PS5_1160_ELF: ${{ matrix.elf }}
+          PS5_1160_DMA_E820_SAFE: ${{ matrix.dma_e820 }}
+        run: python3 tests/audit_1160_port.py
+
+      - name: Hash and compare
+        if: steps.target.outputs.present == 'true'
+        id: hash
+        env:
+          RELEASE: ${{ matrix.release }}
+          RELEASE_SHA256: ${{ matrix.release_sha256 }}
+          CODE_SHA256: ${{ matrix.code_sha256 }}
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/dist"
+          name="$(basename "$ELF")"
+          mkdir -p "$dist"
+          cp "$ELF" "$dist/$name"
+          (cd "$dist" && shasum -a 256 "$name" > SHA256SUMS)
+
+          llvm-objcopy --remove-section=.comment \
+            --remove-section=.note.gnu.build-id "$ELF" "$RUNNER_TEMP/code.elf"
+          file_sha="$(shasum -a 256 "$ELF" | cut -d' ' -f1)"
+          code_sha="$(shasum -a 256 "$RUNNER_TEMP/code.elf" | cut -d' ' -f1)"
+
+          verdict() { if [ "$1" = "$2" ]; then echo same; else echo different; fi; }
+          file_match="$(verdict "$file_sha" "$RELEASE_SHA256")"
+          code_match="$(verdict "$code_sha" "$CODE_SHA256")"
+
+          {
+            echo "commit: $GITHUB_SHA"
+            echo "ref: $GITHUB_REF_NAME"
+            echo "target: $TARGET"
+            echo "runner: macOS $(sw_vers -productVersion) $(uname -m)"
+            echo "llvm: $("$LLVM_CONFIG" --version)"
+            echo "lld: $("$(brew --prefix lld)/bin/ld.lld" --version)"
+            echo "gcc: $(x86_64-elf-gcc --version | head -n1)"
+            echo "binutils: $(x86_64-elf-ld --version | head -n1)"
+            echo "ps5-payload-sdk: $PS5_PAYLOAD_SDK_VERSION ($PS5_PAYLOAD_SDK_SHA256)"
+            echo
+            echo "sha256: $file_sha"
+            echo "sha256 without .comment and build ID: $code_sha"
+            echo "$RELEASE file: $RELEASE_SHA256 ($file_match)"
+            echo "$RELEASE code: $CODE_SHA256 ($code_match)"
+          } > "$dist/build-info.txt"
+          cat "$dist/build-info.txt"
+
+          {
+            echo "### $name"
+            echo
+            echo '```'
+            cat "$dist/build-info.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$code_match" = same ]; then
+            echo "::notice title=$TARGET::code matches $RELEASE (file hash $file_match)"
+          else
+            echo "::notice title=$TARGET::code differs from $RELEASE (expected if the loader source changed)"
+          fi
+
+          echo "dist=$dist" >> "$GITHUB_OUTPUT"
+          echo "artifact=${name%.elf}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload
+        if: steps.target.outputs.present == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.hash.outputs.artifact }}
+          path: ${{ steps.hash.outputs.dist }}/
+          if-no-files-found: error
