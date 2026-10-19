@@ -11,17 +11,18 @@ PS5_1160_DIAGNOSTIC ?= 1
 PS5_1160_DIAG_PRE_STAGE ?= 5
 PS5_1160_DIAG_OP_LIMIT ?= 29
 PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 0
-PS5_1160_DMA_E820_SAFE ?= 0
 export PS5_1160_DIAGNOSTIC PS5_1160_DIAG_PRE_STAGE
 export PS5_1160_DIAG_OP_LIMIT PS5_1160_DIAG_CLEAR_MP3_BUFFERS
-export PS5_1160_DMA_E820_SAFE
 
 # The E820 gate follows the target name.  A command-line value would also be
 # forwarded to the nested HV build through MAKEFLAGS and could put the DMA map
-# into the Run 15 file name, so it is rejected here.
+# into the Run 15 file name, so it is rejected here.  An environment value is
+# ignored: the global value is forced to 0 and only the DMA targets set it.
 ifeq ($(origin PS5_1160_DMA_E820_SAFE),command line)
 $(error use linux-1160-dma-e820 instead of setting PS5_1160_DMA_E820_SAFE)
 endif
+override PS5_1160_DMA_E820_SAFE := 0
+export PS5_1160_DMA_E820_SAFE
 
 # The DMA E820 A/B build shares the nested HV and wake blobs with the Run 15
 # build, so one make invocation can only produce one of them correctly.
@@ -121,7 +122,7 @@ linux-1160-check: linux-1160
 	@$(HOSTCC) -std=c11 -Wall -Wextra -Werror \
 		tests/test_shellcode_kernel_args.c -o build/tests/test_shellcode_kernel_args
 	@build/tests/test_shellcode_kernel_args
-	@PS5_1160_RELEASE_CHECK=1 python3 tests/audit_1160_port.py
+	@PS5_1160_RELEASE_CHECK=1 PS5_1160_ELF=$(PORT_1160_BIN) python3 tests/audit_1160_port.py
 
 # Controlled A/B build for the low-memory DMA reservation used by the official
 # 13.60 loader.  It has its own output name and does not satisfy the Run 15
@@ -174,14 +175,16 @@ $(STAGE2A_OBJS): build/stage2a/%.o: source/%.c
 	$(CC) $(CFLAGS) -DSTAGE2A_1160=1 -ffunction-sections -fdata-sections \
 		-c -o $@ $<
 
+# The 11.60 objects embed the nested HV and wake blobs, which change with the
+# E820 gate.  make 3.81 compares mtimes to the whole second, so always rebuild.
 $(PORT_1160_OBJS): build/1160/%.o: source/%.c $(SC_HV_PORT_1160_H) \
-	$(SC_K_PORT_1160_H) $(SC_BREAK_1160_H)
+	$(SC_K_PORT_1160_H) $(SC_BREAK_1160_H) FORCE_1160_WAKE
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DFW_1160_PORT=1 -ffunction-sections \
 		-fdata-sections -c -o $@ $<
 
 $(PORT_1160_DMA_E820_OBJS): build/1160-dma-e820/%.o: source/%.c \
-	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(SC_BREAK_1160_H)
+	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(SC_BREAK_1160_H) FORCE_1160_WAKE
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DFW_1160_PORT=1 -ffunction-sections \
 		-fdata-sections -c -o $@ $<
