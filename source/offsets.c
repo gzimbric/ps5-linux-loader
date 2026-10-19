@@ -818,10 +818,9 @@ offset_list off_1160 = {
     .GAD_RET_TRAMP = 0x338D2B,
     .GAD_DBREG_RESUME = 0x2A5778,
     /*
-     * The remaining 13.60 carrier fields (GAD_POP_R8_RET,
-     * GAD_STORE_RCX_R8_RET, GAD_OR_RCX_EAX_RET, GAD_STORE_RCX_RDX_RET,
-     * GAD_MOV_RAX_RSI_RET, NVS_SIGNATURE, HV_EFI_MAP_ROOT and the two
-     * reserved slots) are used only by hv_defeat_13xx and stay zero here.
+     * The remaining 13.60 carrier fields are used only by hv_defeat_13xx.
+     * They do not exist in the dedicated 11.60 layout and are zero here in
+     * the general build.
      */
 };
 
