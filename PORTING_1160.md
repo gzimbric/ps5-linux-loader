@@ -102,6 +102,9 @@ three generated identities to the hardware-tested Run 15 artifacts:
 - wake blob: `83756ca9eddffbcf075cb3660ec80755263ce147793922a54414b57c15d11319`;
 - wake ELF: `19c9e7fc396520bad8e49f8f4c97ffe10830d494a2fe9346d6d944ff6f09ac3a`.
 
+The source list is sorted in byte order, so these hashes do not depend on the
+shell locale (`LANG=en_US.UTF-8` used to change the link order).
+
 Changing a diagnostic gate changes a tracked build stamp and forces the wake
 blob and outer payload to rebuild. Such builds remain useful for controlled
 experiments, but `linux-1160-check` rejects them as release artifacts.

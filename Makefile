@@ -53,10 +53,12 @@ STAGE2A_NM ?= x86_64-elf-nm
 HOSTCC ?= cc
 PORT_1160_BIN := bin/ps5-linux-loader-1160.elf
 PORT_1160_DMA_E820_BIN := bin/ps5-linux-loader-1160-dma-e820.elf
-PORT_1160_SRC := $(filter-out source/hv_defeat_0304.c \
+# make 3.81 orders $(wildcard) by locale. Sort so the link order, and the
+# release hashes, are the same in every shell.
+PORT_1160_SRC := $(sort $(filter-out source/hv_defeat_0304.c \
 	source/hv_defeat_0506.c source/hv_defeat_0607.c \
 	source/hv_defeat_13xx.c source/khook.c source/shellcode_1360.c,\
-	$(wildcard source/*.c))
+	$(wildcard source/*.c)))
 PORT_1160_OBJS := $(patsubst source/%.c,build/1160/%.o,$(PORT_1160_SRC))
 PORT_1160_DMA_E820_OBJS := $(patsubst source/%.c,build/1160-dma-e820/%.o,$(PORT_1160_SRC))
 
