@@ -110,6 +110,10 @@ int set_offsets(void) {
       return -1;
     env_offset = off_1160;
     break;
+#else
+  case 0x1360:
+    env_offset = off_1360;
+    break;
 #endif
   default:
     return -1;

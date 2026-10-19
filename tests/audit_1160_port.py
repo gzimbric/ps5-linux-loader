@@ -193,7 +193,8 @@ assert hashlib.sha256(ap).hexdigest() == (
 # brittle because an immediate or embedded blob can legitimately contain the
 # same eight bytes.
 off_1160 = elf_symbol_bytes(ELF, "off_1160")
-assert len(off_1160) == 51 * 8
+# offset_list is upstream's 60-qword table (13.60 merge, 8cda4c1).
+assert len(off_1160) == 60 * 8
 for field_index, value in {
     4: 0x39CD1F0,   # ACPIGBL_FACS
     11: 0x2E7E40,   # FUN_MEMCPY
@@ -206,10 +207,21 @@ for field_index, value in {
     35: 0xA88270,   # mp3_initialize wrapper
     36: 0xA86E70,   # mp3_invoke
     39: 0xC885D0,   # HV_MP_STARTUP_CALL
-    41: 0x2D02000,  # RESUME_DATA_CAVE
+    41: 0x2D02000,  # DATA_CAVE (startup-AP resume carrier)
     42: 0x2A0EDE,   # startup #DB: add rsp,0x28; rep ret
+    45: 0x3CC4AF,   # GAD_STORE_RDI8_RCX_RET
+    47: 0xA7BD86,   # GAD_SET_DR7_RET
+    49: 0x3620BF,   # GAD_STORE_RCX_RAX_RET
+    51: 0xC5E5DA,   # GAD_MOV_RAX_RDI_RET
+    52: 0x304367,   # GAD_REP_MOVSB_RET
+    53: 0x462C1A,   # GAD_CLD_RET
+    54: 0x338D2B,   # GAD_RET_TRAMP
+    55: 0x2A5778,   # GAD_DBREG_RESUME
 }.items():
     assert off_1160[field_index * 8 : field_index * 8 + 8] == u64(value), hex(value)
+# 13.60-only carrier fields stay zero for 11.60.
+for field_index in (43, 44, 46, 48, 50, 56, 57, 58, 59):
+    assert off_1160[field_index * 8 : field_index * 8 + 8] == u64(0), field_index
 assert u64(0x6284AC20) not in off_1160
 assert off_1160[12 * 8 : 13 * 8] != off_1160[42 * 8 : 43 * 8]
 
