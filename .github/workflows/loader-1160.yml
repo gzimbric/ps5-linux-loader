@@ -38,6 +38,10 @@ env:
   # The SDK release the Run 15 build used.
   PS5_PAYLOAD_SDK_VERSION: v0.44
   PS5_PAYLOAD_SDK_SHA256: 4d06eab777bb135705b5a6816688c9132efb246093fe606ac488ab6cf65ca5b0
+  # Apple's make 3.81 sorts $(wildcard source/*.c) by locale. Under the
+  # runner's en_US.UTF-8, loader_staging_1160.o links before loader.o and the
+  # ELF layout changes. The release builds used C order.
+  LC_ALL: C
   HOMEBREW_NO_INSTALL_CLEANUP: 1
   HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
 
