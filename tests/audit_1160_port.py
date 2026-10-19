@@ -45,6 +45,9 @@ release_check = release_check_text == "1"
 dma_e820_safe_text = os.environ.get("PS5_1160_DMA_E820_SAFE", "0")
 assert dma_e820_safe_text in ("0", "1")
 dma_e820_safe = dma_e820_safe_text == "1"
+visible_refusals_text = os.environ.get("PS5_1160_VISIBLE_REFUSALS", "0")
+assert visible_refusals_text in ("0", "1")
+visible_refusals = visible_refusals_text == "1"
 if diagnostic_build:
     diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE", "5")
     diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT", "29")
@@ -170,6 +173,7 @@ ap = AP.read_bytes()
 if release_check:
     assert diagnostic_build, "release check requires PS5_1160_DIAGNOSTIC=1"
     assert not dma_e820_safe, "Run 15 release check requires the original E820 map"
+    assert not visible_refusals, "Run 15 release check requires printf-only refusals"
     assert (diag_pre_stage, diag_op_limit, diag_clear_mp3_buffers) == (5, 29, 0), (
         "release check requires the hardware-tested Run 15 gates",
         diag_pre_stage,
@@ -281,9 +285,22 @@ assert b"PS5 Pro HV layout is not validated" in elf
 # transaction rather than entering the upstream unchecked helper from
 # fetch_linux.  Keep every checkpoint in the final ELF so a headless run can
 # identify the precise boundary reached.
-for marker in (
+printed_refusals = (
     b"11.60 loader REFUSED bzImage size",
     b"11.60 loader REFUSED initrd size",
+)
+shown_refusals = (
+    b"11.60 loader refused bzImage: %zu bytes, needs exactly %llu.",
+    b"11.60 loader refused initrd.img: %zu bytes, needs exactly %llu.",
+)
+if visible_refusals:
+    refusal_markers, absent_refusals = shown_refusals, printed_refusals
+else:
+    refusal_markers, absent_refusals = printed_refusals, shown_refusals
+for marker in absent_refusals:
+    assert marker not in elf, marker
+for marker in (
+    *refusal_markers,
     b"selective CFI/wake-cave text permissions complete",
     b"failed; retaining all backing until cold reboot",
     b"building checked source plan",
@@ -706,4 +723,5 @@ diag_label = (
 print(
     f"11.60 audit OK:{diag_label} elf={len(elf)} wake={len(wake)} "
     f"inner_hv={len(inner_hv)} ap={len(ap)} dma-e820-safe={int(dma_e820_safe)}"
+    f" visible-refusals={int(visible_refusals)}"
 )

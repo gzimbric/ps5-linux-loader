@@ -1,7 +1,8 @@
 .PHONY: all clean wake-1160 stage2a-1160 stage2a-1160-check \
 	linux-1160 linux-1160-check linux-1160-dma-e820 \
 	linux-1160-dma-e820-check break-hv-1160-check FORCE_1160_HV \
-	FORCE_1160_WAKE FORCE_1160_DMA_E820
+	FORCE_1160_WAKE FORCE_1160_DMA_E820 linux-1160-dma-e820-visible \
+	linux-1160-dma-e820-visible-check FORCE_1160_DMA_E820_VISIBLE
 
 # Run 15, the hardware-validated 11.60 Linux/display build, was compiled with
 # the diagnostic gates present and set to the complete Sonic path.  Keep that
@@ -24,9 +25,19 @@ endif
 override PS5_1160_DMA_E820_SAFE := 0
 export PS5_1160_DMA_E820_SAFE
 
+# The on-screen size refusals follow the target name the same way.  Only
+# linux-1160-dma-e820-visible compiles them in; the value is exported for the
+# audit.
+ifeq ($(origin PS5_1160_VISIBLE_REFUSALS),command line)
+$(error use linux-1160-dma-e820-visible instead of setting PS5_1160_VISIBLE_REFUSALS)
+endif
+override PS5_1160_VISIBLE_REFUSALS := 0
+export PS5_1160_VISIBLE_REFUSALS
+
 # The DMA E820 A/B build shares the nested HV and wake blobs with the Run 15
 # build, so one make invocation can only produce one of them correctly.
-DMA_E820_GOALS := linux-1160-dma-e820 linux-1160-dma-e820-check
+DMA_E820_GOALS := linux-1160-dma-e820 linux-1160-dma-e820-check \
+	linux-1160-dma-e820-visible linux-1160-dma-e820-visible-check
 ifneq ($(filter $(DMA_E820_GOALS),$(MAKECMDGOALS)),)
 ifneq ($(filter-out $(DMA_E820_GOALS),$(MAKECMDGOALS)),)
 $(error build $(DMA_E820_GOALS) in a separate make invocation)
@@ -53,6 +64,7 @@ STAGE2A_NM ?= x86_64-elf-nm
 HOSTCC ?= cc
 PORT_1160_BIN := bin/ps5-linux-loader-1160.elf
 PORT_1160_DMA_E820_BIN := bin/ps5-linux-loader-1160-dma-e820.elf
+PORT_1160_DMA_E820_VISIBLE_BIN := bin/ps5-linux-loader-1160-dma-e820-visible.elf
 # make 3.81 orders $(wildcard) by locale. Sort so the link order, and the
 # release hashes, are the same in every shell.
 PORT_1160_SRC := $(sort $(filter-out source/hv_defeat_0304.c \
@@ -61,6 +73,7 @@ PORT_1160_SRC := $(sort $(filter-out source/hv_defeat_0304.c \
 	$(wildcard source/*.c)))
 PORT_1160_OBJS := $(patsubst source/%.c,build/1160/%.o,$(PORT_1160_SRC))
 PORT_1160_DMA_E820_OBJS := $(patsubst source/%.c,build/1160-dma-e820/%.o,$(PORT_1160_SRC))
+PORT_1160_DMA_E820_VISIBLE_OBJS := $(patsubst source/%.c,build/1160-dma-e820-visible/%.o,$(PORT_1160_SRC))
 
 CFLAGS  := -std=c23 -Wall -Iinclude -Ishellcode_hv -Ishellcode_kernel
 LDFLAGS := -Wl,--build-id=sha1
@@ -112,6 +125,13 @@ linux-1160-dma-e820 linux-1160-dma-e820-check: override PS5_1160_DMA_E820_SAFE =
 linux-1160-dma-e820: break-hv-1160-check $(SC_BREAK_1160_H) \
 	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(PORT_1160_DMA_E820_BIN)
 
+# The DMA E820 build with the two boot file size refusals in fetch_linux shown
+# by notify(), so payload menus display them.  Not hardware-tested.
+linux-1160-dma-e820-visible linux-1160-dma-e820-visible-check: override PS5_1160_DMA_E820_SAFE = 1
+linux-1160-dma-e820-visible linux-1160-dma-e820-visible-check: override PS5_1160_VISIBLE_REFUSALS = 1
+linux-1160-dma-e820-visible: break-hv-1160-check $(SC_BREAK_1160_H) \
+	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(PORT_1160_DMA_E820_VISIBLE_BIN)
+
 linux-1160-check: linux-1160
 	$(MAKE) -C shellcode_hv_port_1160 check
 	$(MAKE) -C shellcode_kernel_port_1160 check
@@ -143,6 +163,22 @@ linux-1160-dma-e820-check: linux-1160-dma-e820
 	@build/tests/test_shellcode_kernel_args
 	@PS5_1160_ELF=$(PORT_1160_DMA_E820_BIN) python3 tests/audit_1160_port.py
 	@sha256sum $(PORT_1160_DMA_E820_BIN)
+
+# The same checks for the visible-refusals build.  Its hash is not pinned.
+linux-1160-dma-e820-visible-check: linux-1160-dma-e820-visible
+	$(MAKE) -C shellcode_hv_port_1160 check
+	$(MAKE) -C shellcode_kernel_port_1160 check
+	@$(NM) -an $(PORT_1160_DMA_E820_VISIBLE_BIN) | grep -q ' hv_defeat_1160$$'
+	@strings -a $(PORT_1160_DMA_E820_VISIBLE_BIN) | grep -q \
+		'11.60 Sonic-style Linux wake chain armed'
+	@python3 -c 'from pathlib import Path; p=Path("shellcode_kernel_port_1160/shellcode_kernel_port_1160.bin").read_bytes(); assert p.count(bytes.fromhex("aa11aa11aa11aa11")) == 1'
+	@test "$$(wc -c < shellcode_kernel_port_1160/shellcode_kernel_port_1160.bin | tr -d ' ')" -le 20480
+	@mkdir -p build/tests
+	@$(HOSTCC) -std=c11 -Wall -Wextra -Werror \
+		tests/test_shellcode_kernel_args.c -o build/tests/test_shellcode_kernel_args
+	@build/tests/test_shellcode_kernel_args
+	@PS5_1160_ELF=$(PORT_1160_DMA_E820_VISIBLE_BIN) python3 tests/audit_1160_port.py
+	@sha256sum $(PORT_1160_DMA_E820_VISIBLE_BIN)
 
 $(SC_0607_H):
 	$(MAKE) -C shellcode_0607
@@ -191,6 +227,12 @@ $(PORT_1160_DMA_E820_OBJS): build/1160-dma-e820/%.o: source/%.c \
 	$(CC) $(CFLAGS) -DFW_1160_PORT=1 -ffunction-sections \
 		-fdata-sections -c -o $@ $<
 
+$(PORT_1160_DMA_E820_VISIBLE_OBJS): build/1160-dma-e820-visible/%.o: source/%.c \
+	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(SC_BREAK_1160_H) FORCE_1160_WAKE
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DFW_1160_PORT=1 -DPS5_1160_VISIBLE_REFUSALS=1 \
+		-ffunction-sections -fdata-sections -c -o $@ $<
+
 $(BIN): $(OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(OBJS) $(LDFLAGS) -o $@
@@ -210,9 +252,19 @@ $(PORT_1160_DMA_E820_BIN): FORCE_1160_DMA_E820 $(PORT_1160_DMA_E820_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(PORT_1160_DMA_E820_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
 
+FORCE_1160_DMA_E820_VISIBLE:
+	@rm -f $(PORT_1160_DMA_E820_VISIBLE_BIN)
+
+$(PORT_1160_DMA_E820_VISIBLE_BIN): FORCE_1160_DMA_E820_VISIBLE \
+	$(PORT_1160_DMA_E820_VISIBLE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(PORT_1160_DMA_E820_VISIBLE_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
+
 clean:
 	rm -f $(BIN) $(STAGE2A_BIN) $(PORT_1160_BIN) $(PORT_1160_DMA_E820_BIN) \
-		$(OBJS) $(STAGE2A_OBJS) $(PORT_1160_OBJS) $(PORT_1160_DMA_E820_OBJS)
+		$(PORT_1160_DMA_E820_VISIBLE_BIN) $(OBJS) $(STAGE2A_OBJS) \
+		$(PORT_1160_OBJS) $(PORT_1160_DMA_E820_OBJS) \
+		$(PORT_1160_DMA_E820_VISIBLE_OBJS)
 	rm -f build/tests/test_shellcode_kernel_args
 	$(MAKE) -C shellcode_0607 clean
 	$(MAKE) -C shellcode_hv clean

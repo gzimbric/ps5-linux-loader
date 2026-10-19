@@ -145,6 +145,19 @@ release. Check its SHA-256 against the value above before sending it. The
 in the porting repo covers the Ubuntu 24.04 image, the boot steps and what to
 report.
 
+`make linux-1160-dma-e820-visible` (or `linux-1160-dma-e820-visible-check`
+with the same dumps) builds the DMA E820 map into
+`bin/ps5-linux-loader-1160-dma-e820-visible.elf`. It differs from the DMA
+build only in the two size refusals in `fetch_linux`. When `bzImage` or
+`initrd.img` is not the validated size, it shows a notification with the file
+name, its size and the size it needs, where the other builds only print that
+to the log. Payload menus show only notifications, so with the other builds a
+wrong image ends with "Something went wrong while installing linux files." and
+no reason. The check runs the DMA checks on this ELF and prints its hash,
+which is not pinned. Setting `PS5_1160_VISIBLE_REFUSALS` on the command line
+is refused, and the target cannot share a `make` run with `linux-1160`. This
+build has not been booted on hardware.
+
 `linux-1160-check` fails unless all of the following hold:
 
 - the exact startup-AP donor hash and size match;

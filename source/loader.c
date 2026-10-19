@@ -148,6 +148,12 @@ int read_file(const char *path, void *buf, size_t bufsize) {
 #define VALIDATED_BZIMAGE_SIZE_1160 12702720ULL
 #define VALIDATED_INITRD_SIZE_1160 54376639ULL
 
+/* Payload menus only show notify() messages, so the size refusals below are
+ * invisible there.  Only the linux-1160-dma-e820-visible target sets this. */
+#ifndef PS5_1160_VISIBLE_REFUSALS
+#define PS5_1160_VISIBLE_REFUSALS 0
+#endif
+
 static int align_mapping_size_1160(size_t size, size_t *aligned) {
   if (size == 0 || size > SIZE_MAX - (PAGE_SIZE - 1))
     return -1;
@@ -209,9 +215,16 @@ int fetch_linux(struct linux_info *info) {
 
 #if FW_1160_PORT
   if (bzimage_size != VALIDATED_BZIMAGE_SIZE_1160) {
+#if PS5_1160_VISIBLE_REFUSALS
+    notify("11.60 loader refused bzImage: %zu bytes, needs exactly %llu. "
+           "Use the 11.60 image.\n",
+           bzimage_size, (unsigned long long)VALIDATED_BZIMAGE_SIZE_1160);
+    fflush(stdout);
+#else
     printf("11.60 loader REFUSED bzImage size %zu; validated size is %llu\n",
            bzimage_size, (unsigned long long)VALIDATED_BZIMAGE_SIZE_1160);
     fflush(stdout);
+#endif
     return -1;
   }
   if (bzimage_size > MAX_BZIMAGE_SIZE_1160 ||
@@ -265,9 +278,16 @@ int fetch_linux(struct linux_info *info) {
 
 #if FW_1160_PORT
   if (initrd_size != VALIDATED_INITRD_SIZE_1160) {
+#if PS5_1160_VISIBLE_REFUSALS
+    notify("11.60 loader refused initrd.img: %zu bytes, needs exactly %llu. "
+           "Use the 11.60 image.\n",
+           initrd_size, (unsigned long long)VALIDATED_INITRD_SIZE_1160);
+    fflush(stdout);
+#else
     printf("11.60 loader REFUSED initrd size %zu; validated size is %llu\n",
            initrd_size, (unsigned long long)VALIDATED_INITRD_SIZE_1160);
     fflush(stdout);
+#endif
     munmap(bzimage, bzimage_mapping_size);
     return -1;
   }
