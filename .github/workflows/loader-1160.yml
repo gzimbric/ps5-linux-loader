@@ -1,12 +1,14 @@
 name: 11.60 loader
 run-name: 11.60 loader (${{ github.ref_name }})
 
-# Builds the firmware 11.60 loader ELFs on every push and on manual runs:
+# Builds the firmware 11.60 loader ELFs on main, for pull requests to main,
+# and on manual runs:
 # linux-1160 always, and linux-1160-dma-e820, linux-1160-dma-e820-visible,
 # linux-1160-dma-e820-wifi, linux-1160-dma-e820-bounded and
-# linux-1160-dma-e820-bounded-wifi on branches that have them. Each job runs
-# the structural audit that needs no firmware dumps and uploads the ELF with
-# SHA256SUMS and build-info.txt as a workflow artifact.
+# linux-1160-dma-e820-bounded-wifi on revisions that have them. One hosted
+# macOS job installs the toolchain once, then gives every target an isolated
+# clean build. It runs the structural audit that needs no firmware dumps and
+# uploads all ELFs, checksums and build metadata as one workflow artifact.
 #
 # These artifacts are build checks for testers, not releases. The job installs
 # whatever Homebrew ships at the time, so a file hash can differ when clang or
@@ -22,6 +24,17 @@ run-name: 11.60 loader (${{ github.ref_name }})
 
 on:
   push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - LICENSE
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - LICENSE
   workflow_dispatch:
 
 permissions:
@@ -48,84 +61,15 @@ env:
 
 jobs:
   build:
-    name: ${{ matrix.target }}
+    name: all targets
     runs-on: macos-15
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # release_sha256 is the pinned release file. code_sha256 is that file
-          # with .comment and .note.gnu.build-id removed. A target that the
-          # branch's Makefile does not have is skipped. A pin does not imply a
-          # hardware boot; the release notes and tester guide state that status.
-          - target: linux-1160
-            elf: bin/ps5-linux-loader-1160.elf
-            dma_e820: 0
-            release: Run 15
-            release_sha256: 422b87ec39ca0edfce8dddd609c2eff1cc7adcb2732b7909b76fafbd60dd2336
-            code_sha256: f900298838f8a8b83954fdae5c5eb9ff6a9c628add6437bc10790e905aba8503
-          - target: linux-1160-dma-e820
-            elf: bin/ps5-linux-loader-1160-dma-e820.elf
-            dma_e820: 1
-            release: Run 18 DMA E820
-            release_sha256: 2e1758a2d013305bcb9faa0eb3adf18c34ed76ad85313dd945719c8bf2a0c9c0
-            code_sha256: 6737e7352b3b6bdbad83c4e6b4980c07926f9624b3e4a3dfe52f2a5ea0f3038c
-          # The DMA E820 build with the two size refusals shown on screen.
-          # It has not been booted, so there is no hash to compare with.
-          - target: linux-1160-dma-e820-visible
-            elf: bin/ps5-linux-loader-1160-dma-e820-visible.elf
-            dma_e820: 1
-            visible_refusals: 1
-          # The visible build plus the 11.60 IW620 firmware range. Not booted
-          # either, so it is not pinned.
-          - target: linux-1160-dma-e820-wifi
-            elf: bin/ps5-linux-loader-1160-dma-e820-wifi.elf
-            dma_e820: 1
-            visible_refusals: 1
-            wifi_fw: 1
-          # The visible build with size ranges and boot header checks in place
-          # of the exact Run 15 sizes, with and without the Wi-Fi range. Both
-          # files are pinned in the public tester prerelease. The Wi-Fi variant
-          # booted in Run 21 with an earlier local image and is recommended for
-          # image 2 testing. The non-Wi-Fi variant is an unbooted A/B build.
-          - target: linux-1160-dma-e820-bounded
-            elf: bin/ps5-linux-loader-1160-dma-e820-bounded.elf
-            dma_e820: 1
-            visible_refusals: 1
-            bounded_boot_files: 1
-            release: Run 21 bounded tester prerelease (non-Wi-Fi, unbooted)
-            release_sha256: 1c80b040c5a808b3f09418728424a875d5598fe6b2a5d68adeb4db5979a7541a
-            code_sha256: fdabc92c7f7373e2805c66e8614d36703d63e1df67c32b4230bf8f6168651724
-          - target: linux-1160-dma-e820-bounded-wifi
-            elf: bin/ps5-linux-loader-1160-dma-e820-bounded-wifi.elf
-            dma_e820: 1
-            visible_refusals: 1
-            bounded_boot_files: 1
-            wifi_fw: 1
-            release: Run 21 bounded Wi-Fi tester prerelease
-            release_sha256: e9fe6469943e97a635eccd3f674e55876b56cd1bbd69023eee3af4acea3a1b5f
-            code_sha256: 7b4588e3441fb83b3843196c6ebb20fb630dc737cdd7b9e0945dc7a86fdfbace
-    env:
-      TARGET: ${{ matrix.target }}
-      ELF: ${{ matrix.elf }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Check target
-        id: target
-        run: |
-          if grep -Eq "^${TARGET}:" Makefile; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=$TARGET::not in this branch's Makefile, skipped"
-          fi
-
       - name: Install toolchain
-        if: steps.target.outputs.present == 'true'
         run: |
           set -euo pipefail
           brew install llvm lld x86_64-elf-gcc
@@ -136,7 +80,6 @@ jobs:
           echo "LLVM_CONFIG=$llvm_bin/llvm-config" >> "$GITHUB_ENV"
 
       - name: Fetch ps5-payload-sdk
-        if: steps.target.outputs.present == 'true'
         run: |
           set -euo pipefail
           zip="$RUNNER_TEMP/ps5-payload-sdk.zip"
@@ -146,138 +89,13 @@ jobs:
           unzip -q "$zip" -d "$RUNNER_TEMP"
           echo "PS5_PAYLOAD_SDK=$RUNNER_TEMP/ps5-payload-sdk" >> "$GITHUB_ENV"
 
-      - name: Build
-        if: steps.target.outputs.present == 'true'
-        run: make "$TARGET"
-
-      # Inspect the recursive compiler command reached through the file target.
-      # The normal build must run first so generated headers exist; -B then
-      # makes the dry run print the complete nested build plan.
-      - name: Check direct file target configuration
-        if: steps.target.outputs.present == 'true'
-        env:
-          EXPECTED_DMA_E820: ${{ matrix.dma_e820 }}
-        run: |
-          set -euo pipefail
-          plan="$RUNNER_TEMP/direct-target.plan"
-          make -B -n "$ELF" >"$plan"
-          grep -Fq -- \
-            "-DPS5_1160_DMA_E820_SAFE=$EXPECTED_DMA_E820" "$plan"
-
-          opposite=$((1 - EXPECTED_DMA_E820))
-          if grep -Fq -- "-DPS5_1160_DMA_E820_SAFE=$opposite" "$plan"; then
-            cat "$plan"
-            exit 1
-          fi
-
-          if [ "$TARGET" = linux-1160-dma-e820 ]; then
-            reject_mixed() {
-              log="$RUNNER_TEMP/mixed-goals.log"
-              if make -n "$@" >"$log" 2>&1; then
-                cat "$log"
-                exit 1
-              fi
-              grep -Fq 'in a separate make invocation' "$log"
-            }
-            reject_mixed "$ELF" bin/ps5-linux-loader-1160.elf
-            reject_mixed bin/ps5-linux-loader-1160.elf "$ELF"
-          fi
-
-      - name: Audit without dumps
-        if: steps.target.outputs.present == 'true'
-        env:
-          PS5_1160_DIAGNOSTIC: 1
-          PS5_1160_ELF: ${{ matrix.elf }}
-          PS5_1160_DMA_E820_SAFE: ${{ matrix.dma_e820 }}
-          PS5_1160_VISIBLE_REFUSALS: ${{ matrix.visible_refusals || 0 }}
-          PS5_1160_WIFI_FW: ${{ matrix.wifi_fw || 0 }}
-          PS5_1160_BOUNDED_BOOT_FILES: ${{ matrix.bounded_boot_files || 0 }}
-        run: python3 tests/audit_1160_port.py
-
-      # Runs on the Run 15 and 7.3 header layouts. The kernels themselves are
-      # not in the repository; PS5_1160_TEST_BZIMAGE covers them locally.
-      - name: Boot header unit test
-        if: steps.target.outputs.present == 'true' && matrix.bounded_boot_files == 1
-        run: |
-          set -euo pipefail
-          mkdir -p build/tests
-          cc -std=c11 -Wall -Wextra -Werror tests/test_boot_files_1160.c \
-            -o build/tests/test_boot_files_1160
-          build/tests/test_boot_files_1160
-
-      - name: Hash and compare
-        if: steps.target.outputs.present == 'true'
-        id: hash
-        env:
-          RELEASE: ${{ matrix.release }}
-          RELEASE_SHA256: ${{ matrix.release_sha256 }}
-          CODE_SHA256: ${{ matrix.code_sha256 }}
-        run: |
-          set -euo pipefail
-          dist="$RUNNER_TEMP/dist"
-          name="$(basename "$ELF")"
-          mkdir -p "$dist"
-          cp "$ELF" "$dist/$name"
-          (cd "$dist" && shasum -a 256 "$name" > SHA256SUMS)
-
-          llvm-objcopy --remove-section=.comment \
-            --remove-section=.note.gnu.build-id "$ELF" "$RUNNER_TEMP/code.elf"
-          file_sha="$(shasum -a 256 "$ELF" | cut -d' ' -f1)"
-          code_sha="$(shasum -a 256 "$RUNNER_TEMP/code.elf" | cut -d' ' -f1)"
-
-          verdict() { if [ "$1" = "$2" ]; then echo same; else echo different; fi; }
-          file_match="$(verdict "$file_sha" "$RELEASE_SHA256")"
-          code_match="$(verdict "$code_sha" "$CODE_SHA256")"
-          if [ -z "$RELEASE_SHA256" ]; then
-            file_match=unpinned
-            code_match=unpinned
-          fi
-
-          {
-            echo "commit: $GITHUB_SHA"
-            echo "ref: $GITHUB_REF_NAME"
-            echo "target: $TARGET"
-            echo "runner: macOS $(sw_vers -productVersion) $(uname -m)"
-            echo "llvm: $("$LLVM_CONFIG" --version)"
-            echo "lld: $("$(brew --prefix lld)/bin/ld.lld" --version)"
-            echo "gcc: $(x86_64-elf-gcc --version | head -n1)"
-            echo "binutils: $(x86_64-elf-ld --version | head -n1)"
-            echo "ps5-payload-sdk: $PS5_PAYLOAD_SDK_VERSION ($PS5_PAYLOAD_SDK_SHA256)"
-            echo
-            echo "sha256: $file_sha"
-            echo "sha256 without .comment and build ID: $code_sha"
-            if [ "$file_match" = unpinned ]; then
-              echo "not pinned: no pinned release file to compare with"
-            else
-              echo "$RELEASE file: $RELEASE_SHA256 ($file_match)"
-              echo "$RELEASE code: $CODE_SHA256 ($code_match)"
-            fi
-          } > "$dist/build-info.txt"
-          cat "$dist/build-info.txt"
-
-          {
-            echo "### $name"
-            echo
-            echo '```'
-            cat "$dist/build-info.txt"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$code_match" = unpinned ]; then
-            echo "::notice title=$TARGET::sha256 $file_sha (not pinned)"
-          elif [ "$code_match" = same ]; then
-            echo "::notice title=$TARGET::code matches $RELEASE (file hash $file_match)"
-          else
-            echo "::notice title=$TARGET::code differs from $RELEASE (expected if the loader source changed)"
-          fi
-
-          echo "dist=$dist" >> "$GITHUB_OUTPUT"
-          echo "artifact=${name%.elf}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Build, audit and compare all targets
+        id: build
+        run: .github/scripts/build-loader-1160.sh
 
       - name: Upload
-        if: steps.target.outputs.present == 'true'
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ steps.hash.outputs.artifact }}
-          path: ${{ steps.hash.outputs.dist }}/
+          name: ${{ steps.build.outputs.artifact }}
+          path: ${{ steps.build.outputs.dist }}/
           if-no-files-found: error
