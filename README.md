@@ -18,6 +18,11 @@
 > bounded Wi-Fi target once with a local CachyOS 7.3 image; the bounded target
 > without the Wi-Fi dump remains unbooted.
 
+The general feature list below does not establish those features on 11.60.
+In Run 21, internal Bluetooth failed; the follow-up kernel fix is still
+unbooted. VCN initialized and its rings came up, but video decode was not
+tested.
+
 Features:
 
 - HDMI 4K60 video and audio output
