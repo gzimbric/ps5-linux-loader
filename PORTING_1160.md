@@ -449,6 +449,15 @@ not been booted. Run 18 remains the DMA validation run, Run 19 the Ubuntu
 tester-pair run, and Run 15 the release baseline. See the
 [Run 21 evidence](https://github.com/gzimbric/ps5-linux-porting/blob/main/evidence/11.60-cachyos-k73-run-21.md).
 
+The later CachyOS image 2 candidate is independently pinned by tag
+`cachyos1160-k73-image-2` at source commit
+`346088a48f66eb956dafdec9de5085e73b2d44a5`. It still uses rmux's complete
+Linux 7.3 patch set at `36f173f` as the kernel baseline, then applies a
+separate, hash-pinned IW620 Bluetooth follow-up and changes the image's Wi-Fi
+firmware/driver load order. Those image changes do not alter the bounded
+loader contract. Run 21 booted neither tagged CI image, and image 2 remains
+unbooted; a successful image build is not a loader or hardware result.
+
 ## Hardware test boundary
 
 Use only on an exact retail 11.60 regular PS5, with the same USB Linux files

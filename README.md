@@ -16,7 +16,11 @@
 > (`ubuntu2404-1160-build-3`), both on one CFI-1115B. Its ELF is attached to
 > the `firmware-11.60-dma-e820-run18` release for testers. Run 21 booted the
 > bounded Wi-Fi target once with a local CachyOS 7.3 image; the bounded target
-> without the Wi-Fi dump remains unbooted.
+> without the Wi-Fi dump remains unbooted. The later CachyOS image 2 candidate
+> (`cachyos1160-k73-image-2`, source `346088a`) uses rmux's complete pinned
+> Linux 7.3 PS5 patch set plus a separate IW620 Bluetooth integration
+> follow-up and a Wi-Fi load-order fix. Neither image 1 nor image 2 was the
+> image used in Run 21, and image 2 has not been booted.
 
 The general feature list below does not establish those features on 11.60.
 In Run 21, internal Bluetooth failed; the follow-up kernel fix is still
