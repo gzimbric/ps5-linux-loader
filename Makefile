@@ -54,7 +54,12 @@ DMA_E820_GOALS := linux-1160-dma-e820 linux-1160-dma-e820-check \
 	linux-1160-dma-e820-visible linux-1160-dma-e820-visible-check \
 	linux-1160-dma-e820-wifi linux-1160-dma-e820-wifi-check \
 	linux-1160-dma-e820-bounded linux-1160-dma-e820-bounded-check \
-	linux-1160-dma-e820-bounded-wifi linux-1160-dma-e820-bounded-wifi-check
+	linux-1160-dma-e820-bounded-wifi linux-1160-dma-e820-bounded-wifi-check \
+	bin/ps5-linux-loader-1160-dma-e820.elf \
+	bin/ps5-linux-loader-1160-dma-e820-visible.elf \
+	bin/ps5-linux-loader-1160-dma-e820-wifi.elf \
+	bin/ps5-linux-loader-1160-dma-e820-bounded.elf \
+	bin/ps5-linux-loader-1160-dma-e820-bounded-wifi.elf
 ifneq ($(filter $(DMA_E820_GOALS),$(MAKECMDGOALS)),)
 ifneq ($(filter-out $(DMA_E820_GOALS),$(MAKECMDGOALS)),)
 $(error build $(DMA_E820_GOALS) in a separate make invocation)
@@ -175,7 +180,7 @@ linux-1160-dma-e820-bounded: break-hv-1160-check $(SC_BREAK_1160_H) \
 	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(PORT_1160_DMA_E820_BOUNDED_BIN)
 
 # The bounded build plus the 11.60 IW620 firmware range of the Wi-Fi build.
-# Not hardware-tested.
+# Run 21 booted this target on hardware with a Linux 7.3.0 image.
 linux-1160-dma-e820-bounded-wifi linux-1160-dma-e820-bounded-wifi-check: override PS5_1160_DMA_E820_SAFE = 1
 linux-1160-dma-e820-bounded-wifi linux-1160-dma-e820-bounded-wifi-check: override PS5_1160_VISIBLE_REFUSALS = 1
 linux-1160-dma-e820-bounded-wifi linux-1160-dma-e820-bounded-wifi-check: override PS5_1160_BOUNDED_BOOT_FILES = 1
@@ -371,13 +376,25 @@ $(STAGE2A_BIN): $(STAGE2A_OBJS)
 
 $(PORT_1160_BIN): $(PORT_1160_OBJS)
 	@mkdir -p $(dir $@)
+	@grep -qx 'PS5_1160_DMA_E820_SAFE=0' \
+		shellcode_hv_port_1160/.build-config
 	$(CC) $(PORT_1160_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
 
 FORCE_1160_DMA_E820:
 	@rm -f $(PORT_1160_DMA_E820_BIN)
 
+# Put the E820 mode on the file targets too. Target-specific variables are
+# inherited by prerequisites, so a direct `make bin/...elf` invocation now
+# sends the same mode to the nested HV build as the documented phony target.
+$(PORT_1160_BIN): override PS5_1160_DMA_E820_SAFE = 0
+$(PORT_1160_DMA_E820_BIN) $(PORT_1160_DMA_E820_VISIBLE_BIN) \
+	$(PORT_1160_DMA_E820_WIFI_BIN) $(PORT_1160_DMA_E820_BOUNDED_BIN) \
+	$(PORT_1160_DMA_E820_BOUNDED_WIFI_BIN): override PS5_1160_DMA_E820_SAFE = 1
+
 $(PORT_1160_DMA_E820_BIN): FORCE_1160_DMA_E820 $(PORT_1160_DMA_E820_OBJS)
 	@mkdir -p $(dir $@)
+	@grep -qx 'PS5_1160_DMA_E820_SAFE=1' \
+		shellcode_hv_port_1160/.build-config
 	$(CC) $(PORT_1160_DMA_E820_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
 
 FORCE_1160_DMA_E820_VISIBLE:
@@ -386,6 +403,8 @@ FORCE_1160_DMA_E820_VISIBLE:
 $(PORT_1160_DMA_E820_VISIBLE_BIN): FORCE_1160_DMA_E820_VISIBLE \
 	$(PORT_1160_DMA_E820_VISIBLE_OBJS)
 	@mkdir -p $(dir $@)
+	@grep -qx 'PS5_1160_DMA_E820_SAFE=1' \
+		shellcode_hv_port_1160/.build-config
 	$(CC) $(PORT_1160_DMA_E820_VISIBLE_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
 
 FORCE_1160_DMA_E820_WIFI:
@@ -394,6 +413,8 @@ FORCE_1160_DMA_E820_WIFI:
 $(PORT_1160_DMA_E820_WIFI_BIN): FORCE_1160_DMA_E820_WIFI \
 	$(PORT_1160_DMA_E820_WIFI_OBJS)
 	@mkdir -p $(dir $@)
+	@grep -qx 'PS5_1160_DMA_E820_SAFE=1' \
+		shellcode_hv_port_1160/.build-config
 	$(CC) $(PORT_1160_DMA_E820_WIFI_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
 
 FORCE_1160_DMA_E820_BOUNDED:
@@ -402,6 +423,8 @@ FORCE_1160_DMA_E820_BOUNDED:
 $(PORT_1160_DMA_E820_BOUNDED_BIN): FORCE_1160_DMA_E820_BOUNDED \
 	$(PORT_1160_DMA_E820_BOUNDED_OBJS)
 	@mkdir -p $(dir $@)
+	@grep -qx 'PS5_1160_DMA_E820_SAFE=1' \
+		shellcode_hv_port_1160/.build-config
 	$(CC) $(PORT_1160_DMA_E820_BOUNDED_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
 
 FORCE_1160_DMA_E820_BOUNDED_WIFI:
@@ -410,6 +433,8 @@ FORCE_1160_DMA_E820_BOUNDED_WIFI:
 $(PORT_1160_DMA_E820_BOUNDED_WIFI_BIN): FORCE_1160_DMA_E820_BOUNDED_WIFI \
 	$(PORT_1160_DMA_E820_BOUNDED_WIFI_OBJS)
 	@mkdir -p $(dir $@)
+	@grep -qx 'PS5_1160_DMA_E820_SAFE=1' \
+		shellcode_hv_port_1160/.build-config
 	$(CC) $(PORT_1160_DMA_E820_BOUNDED_WIFI_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
 
 clean:

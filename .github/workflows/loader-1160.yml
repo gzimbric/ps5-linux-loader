@@ -85,8 +85,9 @@ jobs:
             visible_refusals: 1
             wifi_fw: 1
           # The visible build with size ranges and boot header checks in place
-          # of the exact Run 15 sizes, with and without the Wi-Fi range. Not
-          # booted, so not pinned.
+          # of the exact Run 15 sizes, with and without the Wi-Fi range. The
+          # Wi-Fi variant booted in Run 21; neither has a published pinned
+          # release yet.
           - target: linux-1160-dma-e820-bounded
             elf: bin/ps5-linux-loader-1160-dma-e820-bounded.elf
             dma_e820: 1
@@ -137,6 +138,38 @@ jobs:
           echo "$PS5_PAYLOAD_SDK_SHA256  $zip" | shasum -a 256 -c
           unzip -q "$zip" -d "$RUNNER_TEMP"
           echo "PS5_PAYLOAD_SDK=$RUNNER_TEMP/ps5-payload-sdk" >> "$GITHUB_ENV"
+
+      # Inspect the recursive compiler command reached through the file target.
+      # Both target spellings must select the same shared nested-HV mode.
+      - name: Check direct file target configuration
+        if: steps.target.outputs.present == 'true'
+        env:
+          EXPECTED_DMA_E820: ${{ matrix.dma_e820 }}
+        run: |
+          set -euo pipefail
+          plan="$RUNNER_TEMP/direct-target.plan"
+          make -n "$ELF" >"$plan"
+          grep -Fq -- \
+            "-DPS5_1160_DMA_E820_SAFE=$EXPECTED_DMA_E820" "$plan"
+
+          opposite=$((1 - EXPECTED_DMA_E820))
+          if grep -Fq -- "-DPS5_1160_DMA_E820_SAFE=$opposite" "$plan"; then
+            cat "$plan"
+            exit 1
+          fi
+
+          if [ "$TARGET" = linux-1160-dma-e820 ]; then
+            reject_mixed() {
+              log="$RUNNER_TEMP/mixed-goals.log"
+              if make -n "$@" >"$log" 2>&1; then
+                cat "$log"
+                exit 1
+              fi
+              grep -Fq 'in a separate make invocation' "$log"
+            }
+            reject_mixed "$ELF" bin/ps5-linux-loader-1160.elf
+            reject_mixed bin/ps5-linux-loader-1160.elf "$ELF"
+          fi
 
       - name: Build
         if: steps.target.outputs.present == 'true'

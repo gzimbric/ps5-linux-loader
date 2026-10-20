@@ -135,6 +135,11 @@ reproduce it. Expect about 1008 MiB less usable RAM. The gate follows the
 target name: `linux-1160` always builds the original map, setting
 `PS5_1160_DMA_E820_SAFE` on the command line is refused, and the two targets
 have to be built in separate `make` runs because they share the nested blobs.
+The corresponding `bin/*.elf` file targets carry the same target-specific
+mode into their prerequisites. Before linking, each file target checks the
+nested HV build configuration, so a direct file-target build cannot silently
+put the original map in a DMA-named ELF. CI checks both target spellings and
+rejects a mixed direct Run 15/DMA invocation.
 
 Run 18 booted this ELF once with a CachyOS image carrying the exact Run 15
 boot files. Run 19 booted it once with the CI-built Ubuntu 24.04 image from
@@ -177,7 +182,8 @@ identifies itself as firmware `17.130.3.p47`. The firmware is read from each
 console at boot and is not in this repository or any release.
 `PS5_1160_WIFI_FW` is passed only to this target's objects, so no other build
 can pick it up. The check prints the hash, which is not pinned. This build has
-not been booted on hardware.
+not been booted on hardware. The bounded Wi-Fi build below has the same range
+and ran the dump in Run 21.
 
 `make linux-1160-dma-e820-bounded` and `make linux-1160-dma-e820-bounded-wifi`
 (and their `-check` targets, with the same dumps) build
@@ -236,13 +242,13 @@ The loader only sees `cmdline.txt`. A command line built into the kernel with
 `mem=` or `memmap=` there gets past these checks.
 
 Only `[0x100000000, 0x1040048c0)`, the Run 15 files, has been overwritten on
-hardware. With larger files the copy reaches up to `0x10a009000`. After the
-copy, the wake blob still runs the 29 display calls, `printf` and
-`smp_rendezvous` on GameOS kernel memory that the loader cannot check. How
-deep the wake blob's stack goes is not measured either. Past 0x1040 bytes it
-writes into the page under the #SX stack page. The checks above keep what the
-blob reads out of that page, but it can hold GameOS kernel memory that the
-loader does not check.
+hardware. The Run 21 copy ended at `0x103c9d000`, inside it. With larger
+files the copy reaches up to `0x10a009000`. After the copy, the wake blob
+still runs the 29 display calls, `printf` and `smp_rendezvous` on GameOS
+kernel memory that the loader cannot check. How deep the wake blob's stack
+goes is not measured either. Past 0x1040 bytes it writes into the page under
+the #SX stack page. The checks above keep what the blob reads out of that
+page, but it can hold GameOS kernel memory that the loader does not check.
 
 Every refusal is a notification, so payload menus show it. "boot header check
 N failed" means 1 short file, 2 boot flag, 3 `HdrS`, 4 protocol, 5
@@ -274,8 +280,22 @@ and, for those two, checks that the fields still match. Setting
 `PS5_1160_BOUNDED_BOOT_FILES` on the command line is refused. `linux-1160`,
 `linux-1160-dma-e820`, `linux-1160-dma-e820-visible` and
 `linux-1160-dma-e820-wifi` stay byte-identical (`422b87ec`, `2e1758a2`,
-`681b22ea`, `3cda033e`). The bounded hashes are printed, not pinned. Neither
-bounded build has been booted on hardware.
+`681b22ea`, `3cda033e`). The bounded hashes are printed, not pinned. Run 21
+booted the bounded Wi-Fi build once. The bounded build without Wi-Fi has not
+been booted on hardware.
+
+Run 21 used the bounded Wi-Fi ELF built from this branch at `98925a2`
+(170,904 bytes,
+`e9fe6469943e97a635eccd3f674e55876b56cd1bbd69023eee3af4acea3a1b5f`). The boot
+files were not the Run 15 pair: an 11,613,184-byte Linux 7.3.0 `bzImage` and a
+51,900,862-byte `initrd.img`, which the exact-size builds refuse. The loader
+printed `11.60 bounded: bzImage protocol 0x20f, setup 20480, payload 11592704
+at 0x100000, decompress 0x1000000-0x36c5000` and `11.60 bounded: wake copy
+0x100000000-0x103c9d000 (3878 logical pages)`. It also printed that it had
+dumped the Wi-Fi firmware to `lib/nxp/pcieuartiw620_combo_v1.bin` (498,108
+bytes). This is the first time a loader dumped the IW620 firmware on 11.60,
+and the file on the boot drive has the hash given above. See the hardware
+validation status below.
 
 `linux-1160-check` fails unless all of the following hold:
 
@@ -372,6 +392,57 @@ sustained GPU load, a soak and repeat boots were not tested. It shows that the
 image and ELF from the tester guide boot on this console with a picture, apply
 the intended map and pass the guide's checks. Run 18 remains the validation
 run for this build, and Run 15 remains the release baseline.
+
+Run 21 was the first boot of the bounded Wi-Fi build. It ran once on the same
+console, from cold boot, with a local build of the CachyOS 7.3 image from the
+`cachyos-1160-k73` branch of `ps5-linux-image`, on the same official CachyOS
+base as Run 18 and flashed to the same USB drive. Its kernel is Linux 7.3.0,
+built from v7.3 with the PS5 patch from rmux (Armandas Kvietkus),
+[`ps5-linux-patches-1`](https://github.com/rmuxnet/ps5-linux-patches-1),
+which carries the 7.3 port and the CPU and GPU frequency drivers. The
+frequency drivers were built as modules; their idle temperature results are
+in the evidence. `cmdline.txt` is the same as in Runs 15 and 18. The ELF was
+sent once, and the loader's 3,035 bytes of output had the two bounded lines,
+the firmware dump line and the `wake chain armed` line. One press of the PS
+button woke it, the light turned white, and TCP port 22 opened about 25
+seconds after the wake was reported. The operator directly observed the HDMI
+picture. CachyOS with Linux 7.3.0 reached authenticated SSH over wired
+Ethernet. The e820 lines were the same as in Runs 18 and 19, and KASLR put
+the kernel code at physical `0x26ec00000`, about 9.7 GiB, well above the
+reservation. MemTotal was 14,788,356 kB. The kernel log had no I/O, ext4,
+IOMMU, BUG or Oops lines.
+
+The dumped firmware matched the known 11.60 p47 hash (`eafef24a...`). The
+image's firmware service put it in place and reloaded the driver, which
+reported `WLAN FW is active` with version `PCIEIW620-17.130.3.p47`. The
+console joined a 5 GHz WPA3 network with `nmcli`, and a 50 MB HTTPS download
+bound to the Wi-Fi interface ran at about 192 Mbit/s. The driver first probed
+before the firmware was in place, and joining from the KDE network menu
+failed. Both are image issues and are in the evidence.
+
+Run 21 is one boot on one console, with a local image build rather than the CI
+build and no A/B control. A roughly 54 GB Steam install completed while a
+four-hour watcher took 480 samples; each sample had zero new lines matching
+the selected storage-error patterns, and displayed free space fell from 213
+GB to 159 GB. The watcher's `/proc/diskstats` fields were wrong, so its
+throughput and total-I/O figures are invalid. This was not a read-back/hash
+test, and no completed Steam integrity check was captured.
+
+A later 45-minute telemetry log contained 88 samples with `GameThread` and 76
+samples with the GPU at 2.23 GHz. The temperature reached 84.0 °C, and the log
+ended while the game thread and 2.23 GHz state were still active. That is a
+brief game-load result, not a sustained stability or thermal-soak pass; no
+operator-confirmed gameplay or game display was recorded. The frequency
+drivers therefore remain manual. Bluetooth did not work. Video decode,
+reboot and suspend were not tested.
+
+Run 21 shows that the bounded Wi-Fi build accepts a kernel and initrd other
+than the Run 15 pair and boots them with the DMA map, that KASLR moved the
+kernel above the reservation, and that the loader's firmware dump gave the
+driver working firmware on this console. The bounded build without Wi-Fi has
+not been booted. Run 18 remains the DMA validation run, Run 19 the Ubuntu
+tester-pair run, and Run 15 the release baseline. See the
+[Run 21 evidence](https://github.com/gzimbric/ps5-linux-porting/blob/main/evidence/11.60-cachyos-k73-run-21.md).
 
 ## Hardware test boundary
 
