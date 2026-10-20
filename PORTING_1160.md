@@ -159,6 +159,26 @@ which is not pinned. Setting `PS5_1160_VISIBLE_REFUSALS` on the command line
 is refused, and the target cannot share a `make` run with `linux-1160`. This
 build has not been booted on hardware.
 
+`make linux-1160-dma-e820-wifi` (or `linux-1160-dma-e820-wifi-check` with the
+same dumps) builds `bin/ps5-linux-loader-1160-dma-e820-wifi.elf`: the visible
+build plus the 11.60 IW620 Wi-Fi firmware range in the offset table. The range
+is the one returned by the native 11.60 firmware helper at
+`ktext + 0x4ecfd0`: `ktext + 0x1585d90`, length `0x799bc` (498,108 bytes).
+With it set, the existing dump in `source/firmware.c` copies the console's own
+firmware to `lib/nxp/pcieuartiw620_combo_v1.bin` on the boot partition, next
+to `initrd.img`, as upstream does on other firmwares. The other 11.60 builds
+keep both fields zero, print `PS5 WiFi firmware offset missing for firmware
+1160` and write nothing. Against the visible ELF it differs in 27 bytes: 7 in
+those two `off_1160` fields and 20 in the build ID. The nested HV and wake
+blobs are the DMA E820 ones. On the console used for this port, that kernel
+range hashes to
+`eafef24af118f96f84a652e17aeed555ec4ac719b9fac11ff98a2de7e2b4b369` and
+identifies itself as firmware `17.130.3.p47`. The firmware is read from each
+console at boot and is not in this repository or any release.
+`PS5_1160_WIFI_FW` is passed only to this target's objects, so no other build
+can pick it up. The check prints the hash, which is not pinned. This build has
+not been booted on hardware.
+
 `linux-1160-check` fails unless all of the following hold:
 
 - the exact startup-AP donor hash and size match;

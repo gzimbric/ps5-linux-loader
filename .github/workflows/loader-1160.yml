@@ -2,10 +2,10 @@ name: 11.60 loader
 run-name: 11.60 loader (${{ github.ref_name }})
 
 # Builds the firmware 11.60 loader ELFs on every push and on manual runs:
-# linux-1160 always, and linux-1160-dma-e820 and linux-1160-dma-e820-visible
-# on branches that have them. Each job runs the structural audit that needs no
-# firmware dumps and uploads the ELF with SHA256SUMS and build-info.txt as a
-# workflow artifact.
+# linux-1160 always, and linux-1160-dma-e820, linux-1160-dma-e820-visible and
+# linux-1160-dma-e820-wifi on branches that have them. Each job runs the
+# structural audit that needs no firmware dumps and uploads the ELF with
+# SHA256SUMS and build-info.txt as a workflow artifact.
 #
 # These artifacts are build checks for testers, not releases. The Run 15
 # release ELF (422b87ec...) was built on macOS with Homebrew LLVM 23.1.0,
@@ -76,6 +76,13 @@ jobs:
             elf: bin/ps5-linux-loader-1160-dma-e820-visible.elf
             dma_e820: 1
             visible_refusals: 1
+          # The visible build plus the 11.60 IW620 firmware range. Not booted
+          # either, so it is not pinned.
+          - target: linux-1160-dma-e820-wifi
+            elf: bin/ps5-linux-loader-1160-dma-e820-wifi.elf
+            dma_e820: 1
+            visible_refusals: 1
+            wifi_fw: 1
     env:
       TARGET: ${{ matrix.target }}
       ELF: ${{ matrix.elf }}
@@ -127,6 +134,7 @@ jobs:
           PS5_1160_ELF: ${{ matrix.elf }}
           PS5_1160_DMA_E820_SAFE: ${{ matrix.dma_e820 }}
           PS5_1160_VISIBLE_REFUSALS: ${{ matrix.visible_refusals || 0 }}
+          PS5_1160_WIFI_FW: ${{ matrix.wifi_fw || 0 }}
         run: python3 tests/audit_1160_port.py
 
       - name: Hash and compare

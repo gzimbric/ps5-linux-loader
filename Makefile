@@ -2,7 +2,9 @@
 	linux-1160 linux-1160-check linux-1160-dma-e820 \
 	linux-1160-dma-e820-check break-hv-1160-check FORCE_1160_HV \
 	FORCE_1160_WAKE FORCE_1160_DMA_E820 linux-1160-dma-e820-visible \
-	linux-1160-dma-e820-visible-check FORCE_1160_DMA_E820_VISIBLE
+	linux-1160-dma-e820-visible-check FORCE_1160_DMA_E820_VISIBLE \
+	linux-1160-dma-e820-wifi linux-1160-dma-e820-wifi-check \
+	FORCE_1160_DMA_E820_WIFI
 
 # Run 15, the hardware-validated 11.60 Linux/display build, was compiled with
 # the diagnostic gates present and set to the complete Sonic path.  Keep that
@@ -37,7 +39,8 @@ export PS5_1160_VISIBLE_REFUSALS
 # The DMA E820 A/B build shares the nested HV and wake blobs with the Run 15
 # build, so one make invocation can only produce one of them correctly.
 DMA_E820_GOALS := linux-1160-dma-e820 linux-1160-dma-e820-check \
-	linux-1160-dma-e820-visible linux-1160-dma-e820-visible-check
+	linux-1160-dma-e820-visible linux-1160-dma-e820-visible-check \
+	linux-1160-dma-e820-wifi linux-1160-dma-e820-wifi-check
 ifneq ($(filter $(DMA_E820_GOALS),$(MAKECMDGOALS)),)
 ifneq ($(filter-out $(DMA_E820_GOALS),$(MAKECMDGOALS)),)
 $(error build $(DMA_E820_GOALS) in a separate make invocation)
@@ -65,6 +68,7 @@ HOSTCC ?= cc
 PORT_1160_BIN := bin/ps5-linux-loader-1160.elf
 PORT_1160_DMA_E820_BIN := bin/ps5-linux-loader-1160-dma-e820.elf
 PORT_1160_DMA_E820_VISIBLE_BIN := bin/ps5-linux-loader-1160-dma-e820-visible.elf
+PORT_1160_DMA_E820_WIFI_BIN := bin/ps5-linux-loader-1160-dma-e820-wifi.elf
 # make 3.81 orders $(wildcard) by locale. Sort so the link order, and the
 # release hashes, are the same in every shell.
 PORT_1160_SRC := $(sort $(filter-out source/hv_defeat_0304.c \
@@ -74,6 +78,7 @@ PORT_1160_SRC := $(sort $(filter-out source/hv_defeat_0304.c \
 PORT_1160_OBJS := $(patsubst source/%.c,build/1160/%.o,$(PORT_1160_SRC))
 PORT_1160_DMA_E820_OBJS := $(patsubst source/%.c,build/1160-dma-e820/%.o,$(PORT_1160_SRC))
 PORT_1160_DMA_E820_VISIBLE_OBJS := $(patsubst source/%.c,build/1160-dma-e820-visible/%.o,$(PORT_1160_SRC))
+PORT_1160_DMA_E820_WIFI_OBJS := $(patsubst source/%.c,build/1160-dma-e820-wifi/%.o,$(PORT_1160_SRC))
 
 CFLAGS  := -std=c23 -Wall -Iinclude -Ishellcode_hv -Ishellcode_kernel
 LDFLAGS := -Wl,--build-id=sha1
@@ -132,6 +137,16 @@ linux-1160-dma-e820-visible linux-1160-dma-e820-visible-check: override PS5_1160
 linux-1160-dma-e820-visible: break-hv-1160-check $(SC_BREAK_1160_H) \
 	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(PORT_1160_DMA_E820_VISIBLE_BIN)
 
+# The visible-refusals build plus the 11.60 IW620 firmware range, so the loader
+# also dumps each console's own Wi-Fi firmware to lib/nxp/ beside the boot
+# files.  Only the offset table changes; the nested blobs are the DMA E820
+# ones.  PS5_1160_WIFI_FW is passed only to these objects, so no other target
+# can pick it up.  Not hardware-tested.
+linux-1160-dma-e820-wifi linux-1160-dma-e820-wifi-check: override PS5_1160_DMA_E820_SAFE = 1
+linux-1160-dma-e820-wifi linux-1160-dma-e820-wifi-check: override PS5_1160_VISIBLE_REFUSALS = 1
+linux-1160-dma-e820-wifi: break-hv-1160-check $(SC_BREAK_1160_H) \
+	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(PORT_1160_DMA_E820_WIFI_BIN)
+
 linux-1160-check: linux-1160
 	$(MAKE) -C shellcode_hv_port_1160 check
 	$(MAKE) -C shellcode_kernel_port_1160 check
@@ -179,6 +194,23 @@ linux-1160-dma-e820-visible-check: linux-1160-dma-e820-visible
 	@build/tests/test_shellcode_kernel_args
 	@PS5_1160_ELF=$(PORT_1160_DMA_E820_VISIBLE_BIN) python3 tests/audit_1160_port.py
 	@sha256sum $(PORT_1160_DMA_E820_VISIBLE_BIN)
+
+# The same checks for the Wi-Fi build.  Its hash is not pinned.
+linux-1160-dma-e820-wifi-check: linux-1160-dma-e820-wifi
+	$(MAKE) -C shellcode_hv_port_1160 check
+	$(MAKE) -C shellcode_kernel_port_1160 check
+	@$(NM) -an $(PORT_1160_DMA_E820_WIFI_BIN) | grep -q ' hv_defeat_1160$$'
+	@strings -a $(PORT_1160_DMA_E820_WIFI_BIN) | grep -q \
+		'11.60 Sonic-style Linux wake chain armed'
+	@python3 -c 'from pathlib import Path; p=Path("shellcode_kernel_port_1160/shellcode_kernel_port_1160.bin").read_bytes(); assert p.count(bytes.fromhex("aa11aa11aa11aa11")) == 1'
+	@test "$$(wc -c < shellcode_kernel_port_1160/shellcode_kernel_port_1160.bin | tr -d ' ')" -le 20480
+	@mkdir -p build/tests
+	@$(HOSTCC) -std=c11 -Wall -Wextra -Werror \
+		tests/test_shellcode_kernel_args.c -o build/tests/test_shellcode_kernel_args
+	@build/tests/test_shellcode_kernel_args
+	@PS5_1160_WIFI_FW=1 PS5_1160_ELF=$(PORT_1160_DMA_E820_WIFI_BIN) \
+		python3 tests/audit_1160_port.py
+	@sha256sum $(PORT_1160_DMA_E820_WIFI_BIN)
 
 $(SC_0607_H):
 	$(MAKE) -C shellcode_0607
@@ -233,6 +265,13 @@ $(PORT_1160_DMA_E820_VISIBLE_OBJS): build/1160-dma-e820-visible/%.o: source/%.c 
 	$(CC) $(CFLAGS) -DFW_1160_PORT=1 -DPS5_1160_VISIBLE_REFUSALS=1 \
 		-ffunction-sections -fdata-sections -c -o $@ $<
 
+$(PORT_1160_DMA_E820_WIFI_OBJS): build/1160-dma-e820-wifi/%.o: source/%.c \
+	$(SC_HV_PORT_1160_H) $(SC_K_PORT_1160_H) $(SC_BREAK_1160_H) FORCE_1160_WAKE
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DFW_1160_PORT=1 -DPS5_1160_VISIBLE_REFUSALS=1 \
+		-DPS5_1160_WIFI_FW=1 -ffunction-sections -fdata-sections \
+		-c -o $@ $<
+
 $(BIN): $(OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(OBJS) $(LDFLAGS) -o $@
@@ -260,11 +299,19 @@ $(PORT_1160_DMA_E820_VISIBLE_BIN): FORCE_1160_DMA_E820_VISIBLE \
 	@mkdir -p $(dir $@)
 	$(CC) $(PORT_1160_DMA_E820_VISIBLE_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
 
+FORCE_1160_DMA_E820_WIFI:
+	@rm -f $(PORT_1160_DMA_E820_WIFI_BIN)
+
+$(PORT_1160_DMA_E820_WIFI_BIN): FORCE_1160_DMA_E820_WIFI \
+	$(PORT_1160_DMA_E820_WIFI_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(PORT_1160_DMA_E820_WIFI_OBJS) $(LDFLAGS) -Wl,--gc-sections -o $@
+
 clean:
 	rm -f $(BIN) $(STAGE2A_BIN) $(PORT_1160_BIN) $(PORT_1160_DMA_E820_BIN) \
-		$(PORT_1160_DMA_E820_VISIBLE_BIN) $(OBJS) $(STAGE2A_OBJS) \
-		$(PORT_1160_OBJS) $(PORT_1160_DMA_E820_OBJS) \
-		$(PORT_1160_DMA_E820_VISIBLE_OBJS)
+		$(PORT_1160_DMA_E820_VISIBLE_BIN) $(PORT_1160_DMA_E820_WIFI_BIN) \
+		$(OBJS) $(STAGE2A_OBJS) $(PORT_1160_OBJS) $(PORT_1160_DMA_E820_OBJS) \
+		$(PORT_1160_DMA_E820_VISIBLE_OBJS) $(PORT_1160_DMA_E820_WIFI_OBJS)
 	rm -f build/tests/test_shellcode_kernel_args
 	$(MAKE) -C shellcode_0607 clean
 	$(MAKE) -C shellcode_hv clean
