@@ -9,6 +9,9 @@
 #define RUN15_SETUP_SECTS 39U
 #define RUN15_SYSSIZE 792640U
 #define RUN15_INIT_SIZE 0x2ac9000U
+/* Where the synthetic image keeps kaslr.o's message, inside the payload. */
+#define KASLR_AT (20480U + 0x1000U)
+#define KASLR_LEN (sizeof(BZ_KASLR_MESSAGE_1160) - 1U)
 
 static uint8_t *image;
 
@@ -42,9 +45,18 @@ static void run15_header(void) {
   put32(0x238, 2047);
   put64(0x258, 0x1000000);
   put32(0x260, RUN15_INIT_SIZE);
+  memcpy(image + KASLR_AT, BZ_KASLR_MESSAGE_1160, KASLR_LEN);
 }
 
 static int check(size_t size) { return check_bzimage_1160(image, size, NULL); }
+
+static uint8_t *find(uint8_t *buf, size_t size, const char *text) {
+  size_t n = strlen(text);
+  for (size_t i = 0; i + n <= size; i++)
+    if (memcmp(buf + i, text, n) == 0)
+      return buf + i;
+  return NULL;
+}
 
 static void check_file(const char *path) {
   FILE *f = fopen(path, "rb");
@@ -67,6 +79,17 @@ static void check_file(const char *path) {
          (unsigned long long)layout.payload_size,
          (unsigned long long)layout.decompress_base,
          (unsigned long long)layout.decompress_end);
+
+  /* The same kernel without kaslr.o's message, or with a setup_data list. */
+  {
+    uint8_t *message = find(buf, (size_t)size, BZ_KASLR_MESSAGE_1160);
+    assert(message != NULL);
+    message[0] = 0;
+    assert(check_bzimage_1160(buf, (size_t)size, NULL) == BZ_KASLR_1160);
+    message[0] = (uint8_t)BZ_KASLR_MESSAGE_1160[0];
+    buf[0x250] = 1;
+    assert(check_bzimage_1160(buf, (size_t)size, NULL) == BZ_SETUP_DATA_1160);
+  }
   free(buf);
 }
 
@@ -168,13 +191,56 @@ int main(int argc, char **argv) {
   put32(0x260, 0x100000);
   assert(check(RUN15_SIZE) == BZ_INIT_SIZE_1160);
 
+  /* A pref_address past the limit is refused before base + init_size can
+   * wrap. */
+  run15_header();
+  put32(0x230, 0x1000000);
+  put64(0x258, 0xffffffffff000000ULL);
+  put32(0x260, 0x2000000);
+  assert(check(RUN15_SIZE) == BZ_PREF_ADDRESS_1160);
+  run15_header();
+  put64(0x258, 0x40000000);
+  assert(check(RUN15_SIZE) == BZ_PREF_ADDRESS_1160);
+
   run15_header();
   put32(0x238, 255);
   assert(check(RUN15_SIZE) == BZ_CMDLINE_SIZE_1160);
 
-  /* initrd formats. */
+  /* kaslr.o's message has to be inside the payload the inner HV loads. */
+  run15_header();
+  memset(image + KASLR_AT, 0, KASLR_LEN);
+  assert(check(RUN15_SIZE) == BZ_KASLR_1160);
+  memcpy(image + RUN15_SIZE - KASLR_LEN, BZ_KASLR_MESSAGE_1160, KASLR_LEN);
+  assert(check(RUN15_SIZE) == BZ_OK_1160);
+  put32(0x1f4, RUN15_SYSSIZE - 1);
+  assert(check(RUN15_SIZE) == BZ_KASLR_1160);
+  memset(image + RUN15_SIZE - KASLR_LEN, 0, KASLR_LEN);
+
+  run15_header();
+  put64(0x250, 0xdeadbeef000ULL);
+  assert(check(RUN15_SIZE) == BZ_SETUP_DATA_1160);
+
+  /* initrd formats.  The kernel rejects odc cpio (070707). */
   memcpy(initrd, "070701", 6);
   assert(check_initrd_1160(initrd, sizeof(initrd)) == 0);
+  memcpy(initrd, "070702", 6);
+  assert(check_initrd_1160(initrd, sizeof(initrd)) == 0);
+  memcpy(initrd, "070707", 6);
+  assert(check_initrd_1160(initrd, sizeof(initrd)) != 0);
+  /* Leading NULs are skipped; cpio has to start at a multiple of 4. */
+  memset(initrd, 0, sizeof(initrd));
+  memcpy(initrd + 4, "070701", 6);
+  assert(check_initrd_1160(initrd, sizeof(initrd)) == 0);
+  memset(initrd, 0, sizeof(initrd));
+  memcpy(initrd + 2, "070701", 6);
+  assert(check_initrd_1160(initrd, sizeof(initrd)) != 0);
+  memset(initrd, 0, sizeof(initrd));
+  memcpy(initrd + 3, "\x1f\x8b", 2);
+  assert(check_initrd_1160(initrd, sizeof(initrd)) == 0);
+  memset(initrd, 0, sizeof(initrd));
+  memcpy(initrd + sizeof(initrd) - 5, "07070", 5);
+  assert(check_initrd_1160(initrd, sizeof(initrd)) != 0);
+  memset(initrd, 0, sizeof(initrd));
   memcpy(initrd, "\x28\xb5\x2f\xfd", 4);
   assert(check_initrd_1160(initrd, sizeof(initrd)) == 0);
   memcpy(initrd, "\x1f\x8b", 2);
@@ -184,6 +250,30 @@ int main(int argc, char **argv) {
   assert(check_initrd_1160(initrd, sizeof(initrd)) != 0);
   memset(initrd, 0, sizeof(initrd));
   assert(check_initrd_1160(initrd, sizeof(initrd)) != 0);
+
+  /* vram.txt: 16 MiB units, below the HV stacks. */
+  assert(MAX_VRAM_SIZE_1160 == 0x35f000000ULL);
+  assert(check_vram_size_1160(0x20000000) == 0);
+  assert(check_vram_size_1160(0x1000000) == 0);
+  assert(check_vram_size_1160(MAX_VRAM_SIZE_1160) == 0);
+  assert(check_vram_size_1160(MAX_VRAM_SIZE_1160 + 0x1000000) != 0);
+  assert(check_vram_size_1160(0x20000001) != 0);
+  assert(check_vram_size_1160(0x800000) != 0);
+  assert(check_vram_size_1160(0) != 0);
+
+  /* cmdline.txt options that can turn KASLR off or redefine RAM. */
+  assert(cmdline_has_option_1160("mem=1G", "mem="));
+  assert(cmdline_has_option_1160("root=LABEL=x mem=1G rw", "mem="));
+  assert(cmdline_has_option_1160("rw\tmemmap=1G$0x1000000", "memmap="));
+  assert(cmdline_has_option_1160("rw \"mem=512M\"", "mem="));
+  assert(!cmdline_has_option_1160("memmap=1G!4G", "mem="));
+  assert(!cmdline_has_option_1160("foo.mem=1 nomem=2 memtest=1", "mem="));
+  assert(!cmdline_has_option_1160("foo.memmap=1 memmapx=1", "memmap="));
+  assert(!cmdline_has_option_1160("", "mem="));
+  assert(!cmdline_has_option_1160(
+      "root=LABEL=__DISTRO__ rw rootwait console=ttyTitania0 console=tty0 "
+      "video=DP-1:1920x1080@60 mitigations=off idle=halt preempt=full",
+      "mem="));
 
   for (int i = 1; i < argc; i++)
     if (argv[i][0] != '\0')

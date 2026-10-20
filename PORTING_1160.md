@@ -195,34 +195,59 @@ wake code take the sizes from `linux_info`. They refuse:
   2.15 or later, `setup_sects` 1 to 64 (the inner HV does not read 0 as 4),
   `syssize * 16` bytes inside the file, `LOADED_HIGH`, `XLF_KERNEL_64`,
   `XLF_CAN_BE_LOADED_ABOVE_4G`, a relocatable kernel, a power-of-two
-  `kernel_alignment` of 2 to 16 MiB with `pref_address` aligned to it, a
-  payload at `0x100000` that ends by the decompression base (15 MiB with the
-  usual 16 MiB base), a decompression range that ends by `0x3fffc000`, and
-  `cmdline_size` of at least 2047;
-- an `initrd.img` that is not a newc cpio or zstd, gzip, xz, lz4, lzma, bzip2
-  or lzo data;
-- `nokaslr` in `cmdline.txt`;
-- any `bzImage`, `initrd.img`, `linux_info` or alias page-table page, or the
-  #SX stack page, inside `[0x100000000, end of the wake copy)`, which the wake
-  blob overwrites before Linux starts.
+  `kernel_alignment` of 2 to 16 MiB with `pref_address` aligned to it and no
+  higher than `0x3fffc000`, a payload at `0x100000` that ends by the
+  decompression base (15 MiB with the usual 16 MiB base), a decompression
+  range that ends by `0x3fffc000`, `cmdline_size` of at least 2047, and a zero
+  `setup_data` (the inner HV passes the header to Linux as it is);
+- a kernel built without `CONFIG_RANDOMIZE_BASE`. The header does not show it,
+  so the loader looks for the decompressor's "Physical KASLR disabled: no
+  suitable memory region!" message, which is only there when KASLR is built
+  in;
+- an `initrd.img` that is not a newc cpio (`070701` or `070702`, after any NUL
+  padding, at a multiple of 4 bytes) or zstd, gzip, xz, lz4, lzma, bzip2 or lzo
+  data. The kernel rejects the old `070707` cpio format;
+- a `vram.txt` size that is not a multiple of 16 MiB or is over `0x35f000000`.
+  The inner HV puts VRAM right below `0x470000000`, and it has to stay above
+  the wake copy and the HV stacks, which end at `0x11000f000`;
+- `nokaslr`, or any `mem=` or `memmap=` option, in `cmdline.txt`;
+- a `linux_info` page, alias page table (new or already present), PID 1's PML4,
+  DMAP page table for the copy, kernel code cave page or page table that maps
+  it, or the #SX stack page or the page under it, inside
+  `[0x100000000, end of the wake copy)`, which the wake blob overwrites before
+  Linux starts. A `bzImage` or `initrd.img` page is refused only if the copy
+  would reach it before reading it, because the blob copies forward.
 
 KASLR is required with the DMA map: the only RAM it leaves below 1 GiB is 1 to
-16 MiB, so the kernel has to be moved above the reservation. Hence the
-`nokaslr` refusal, and the kernel must be built with `CONFIG_RANDOMIZE_BASE=y`,
-which the header does not show.
+16 MiB, so the kernel has to be moved above the reservation. The decompressor
+keeps the kernel at 16 MiB, inside the reservation, whenever it finds no slot:
+with `nokaslr`, a kernel without `CONFIG_RANDOMIZE_BASE`, a `mem=` below about
+1 GiB plus the kernel size, or more than four `memmap=` options. `memmap=` can
+also turn reserved memory back into RAM. Hence those refusals. None of the
+shipped `cmdline.txt` files use `mem=` or `memmap=`.
+
+Only `[0x100000000, 0x1040048c0)`, the Run 15 files, has been overwritten on
+hardware. With larger files the copy reaches up to `0x10a009000`. After the
+copy, the wake blob still runs the 29 display calls, `printf` and
+`smp_rendezvous` on GameOS kernel memory that the loader cannot check.
 
 Every refusal is a notification, so payload menus show it. "boot header check
 N failed" means 1 short file, 2 boot flag, 3 `HdrS`, 4 protocol, 5
 `setup_sects`, 6 `syssize`, 7 load flags, 8 not relocatable, 9
 `kernel_alignment`, 10 `pref_address` or a payload over 15 MiB, 11
-`init_size`, 12 `cmdline_size`. The checks also run
+`init_size`, 12 `cmdline_size`, 13 no KASLR, 14 `setup_data`. The boot file
+refusals all come before the Wi-Fi build writes the firmware to the boot
+drive. A staging refusal leaves nothing armed. Source pages come from that
+run, so running the loader again can work; page tables and the code cave stay
+where they are until a reboot. The checks also run
 `tests/test_boot_files_1160.c`; `PS5_1160_TEST_BZIMAGE=/path/to/bzImage` makes
-it parse a real kernel too. Setting `PS5_1160_BOUNDED_BOOT_FILES` on the
-command line is refused. `linux-1160`, `linux-1160-dma-e820`,
-`linux-1160-dma-e820-visible` and `linux-1160-dma-e820-wifi` stay
-byte-identical (`422b87ec`, `2e1758a2`, `681b22ea`, `3cda033e`). The bounded
-hashes are printed, not pinned. Neither bounded build has been booted on
-hardware.
+it parse a real kernel too, and check that the same kernel without the KASLR
+message or with a `setup_data` pointer is refused. Setting
+`PS5_1160_BOUNDED_BOOT_FILES` on the command line is refused. `linux-1160`,
+`linux-1160-dma-e820`, `linux-1160-dma-e820-visible` and
+`linux-1160-dma-e820-wifi` stay byte-identical (`422b87ec`, `2e1758a2`,
+`681b22ea`, `3cda033e`). The bounded hashes are printed, not pinned. Neither
+bounded build has been booted on hardware.
 
 `linux-1160-check` fails unless all of the following hold:
 

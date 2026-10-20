@@ -165,6 +165,8 @@ int read_file(const char *path, void *buf, size_t bufsize) {
 #error "the bounded 11.60 build must show its refusals"
 #endif
 #include "boot_files_1160.h"
+static_assert(HV_STACKS_END_1160 == hv_base_rsp + 15 * hv_stack_size,
+              "the vram.txt limit no longer matches the HV stacks");
 #endif
 
 static int align_mapping_size_1160(size_t size, size_t *aligned) {
@@ -410,10 +412,12 @@ int fetch_linux(struct linux_info *info) {
   initrd_size = (size_t)bytes_read;
 #endif
 
+#if !PS5_1160_BOUNDED_BOOT_FILES
   if (dump_device_firmwares(initrd_path) < 0) {
     notify(
         "Something went wrong while dumping device firmwares - Continuing\n");
   }
+#endif
 
   size_t vram_size;
   char buf_vram[16] = {};
@@ -431,6 +435,19 @@ int fetch_linux(struct linux_info *info) {
       vram_size = VRAM_SIZE;
     }
   }
+#if PS5_1160_BOUNDED_BOOT_FILES
+  /* The inner HV puts VRAM right below 0x470000000; it must not cover the
+   * staged files or the HV stacks. */
+  if (check_vram_size_1160(vram_size)) {
+    notify("11.60 loader refused vram.txt: 0x%zx bytes, needs a multiple of "
+           "16 MiB up to 0x%llx.\n",
+           vram_size, (unsigned long long)MAX_VRAM_SIZE_1160);
+    fflush(stdout);
+    munmap(initrd, initrd_mapping_size);
+    munmap(bzimage, bzimage_mapping_size);
+    return -1;
+  }
+#endif
 
   char cmdline[2048] = {};
   ret = find_and_read_file("cmdline.txt", cmdline, sizeof(cmdline) - 1);
@@ -452,6 +469,24 @@ int fetch_linux(struct linux_info *info) {
     munmap(bzimage, bzimage_mapping_size);
     return -1;
   }
+  /* A small mem= or more than four memmap= also make KASLR keep the kernel
+   * at 16 MiB, and memmap= can turn reserved memory back into RAM. */
+  if (cmdline_has_option_1160(cmdline, "mem=") ||
+      cmdline_has_option_1160(cmdline, "memmap=")) {
+    notify("11.60 loader refused cmdline.txt: mem= and memmap= can undo the "
+           "DMA reservation.\n");
+    fflush(stdout);
+    munmap(initrd, initrd_mapping_size);
+    munmap(bzimage, bzimage_mapping_size);
+    return -1;
+  }
+
+  /* Write the Wi-Fi firmware to the boot drive only once every boot file
+   * refusal has passed. */
+  if (dump_device_firmwares(initrd_path) < 0) {
+    notify(
+        "Something went wrong while dumping device firmwares - Continuing\n");
+  }
 #endif
 
   info->linux_info = kernel_cave_linux_info;
@@ -471,7 +506,13 @@ int fetch_linux(struct linux_info *info) {
    */
   if (stage_linux_aliases_1160(info, bzimage, bzimage_mapping_size, initrd,
                                initrd_mapping_size)) {
+#if PS5_1160_BOUNDED_BOOT_FILES
+    /* Staging returns only with no writes left in place. */
+    notify("11.60 checked Linux alias staging failed. Nothing is armed, so "
+           "the loader can be run again.\n");
+#else
     notify("11.60 checked Linux alias staging failed.\n");
+#endif
     munmap(initrd, initrd_mapping_size);
     munmap(bzimage, bzimage_mapping_size);
     return -1;

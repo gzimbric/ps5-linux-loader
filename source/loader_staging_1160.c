@@ -29,19 +29,37 @@ static_assert(MAX_COMBINED_MAPPING == MAX_STAGED_BOOT_FILES_1160,
  * The wake blob writes [cave, cave_bzImage + bzImage + initrd) through DMAP
  * before Linux starts: HV page tables and code, linux_info, bzImage, initrd.
  * The exact Run 15 files covered [0x100000000, 0x1040048c0).  Larger files
- * cover more, so refuse any source, info or alias table page in that range;
- * the copy would overwrite it before or while reading it.
+ * cover more, so refuse anything the blob still needs that the copy would
+ * overwrite first: a source page, linux_info, the alias and DMAP page tables,
+ * PID 1's PML4 and the kernel code cave the blob runs from.
  */
 static_assert(cave_bzImage + MAX_COMBINED_MAPPING <= hv_base_rsp - hv_stack_size,
               "staged Linux files would reach the HV stacks");
 static_assert(cave_bzImage + MAX_COMBINED_MAPPING <= cave + 0x40000000ULL,
               "staged Linux files would leave the HV identity leaf");
 
+/* CODE_CAVE_CAPACITY in hv_defeat_1160.c; the Makefile holds the wake blob,
+ * with its args and globals, to the same 20480 bytes. */
+#define WAKE_CAVE_SIZE_1160 0x5000ULL
+
 static uint64_t wake_copy_end_1160;
 
 int pa_in_wake_copy_1160(uint64_t pa) {
   return wake_copy_end_1160 != 0 && pa < wake_copy_end_1160 &&
          pa + PAGE_SIZE > cave;
+}
+
+/*
+ * The copy runs forward: linux_info, then bzImage and initrd page by page, so
+ * logical page i >= 1 lands at cave_bzImage + (i - 1) * PAGE_SIZE.  A bzImage
+ * or initrd page is read before the copy reaches anything at or above the end
+ * of its own destination.  linux_info, which also holds the MP3 buffers, is
+ * used until Linux starts and has to be outside the whole range.
+ */
+static int source_overwritten_1160(size_t i, uint64_t pa) {
+  if (i == 0)
+    return pa_in_wake_copy_1160(pa);
+  return pa + PAGE_SIZE > cave && pa < cave_bzImage + i * PAGE_SIZE;
 }
 #endif
 
@@ -449,6 +467,95 @@ static void tx_release_backing(struct alias_tx_1160 *tx) {
     sleep(30);
 }
 
+#if PS5_1160_BOUNDED_BOOT_FILES
+/* These tables and the code cave stay where they are until a reboot. */
+static int refuse_in_wake_copy_1160(const char *what, uint64_t pa) {
+  if (!pa_in_wake_copy_1160(pa))
+    return 0;
+  notify("11.60 loader refused staging: %s 0x%llx is inside the Linux copy "
+         "range. Reboot before trying again.\n",
+         what, (unsigned long long)pa);
+  fflush(stdout);
+  return 1;
+}
+
+/* The alias tables that exist already; ensure_child_table reuses them. */
+static int check_alias_tables_1160(uint64_t pml4, uint64_t va) {
+  uint64_t table_va = pml4;
+
+  for (int level = 0; level < 3; level++) {
+    uint64_t entry = 0;
+    int shift = 39 - level * 9;
+
+    if (read_entry(table_va + ((va >> shift) & 0x1FF) * 8, &entry))
+      return -1;
+    if (!PAGE_P(entry))
+      return 0;
+    if (PAGE_PS(entry) ||
+        refuse_in_wake_copy_1160("page table", PAGE_PA(entry)))
+      return -1;
+    table_va = pa_to_dmap(PAGE_PA(entry));
+  }
+  return 0;
+}
+
+/* Walks a mapped va, refusing any table on the way.  Returns the physical
+ * address and the end of the mapping that holds it. */
+static int walk_wake_mapping_1160(uint64_t pml4, uint64_t va, uint64_t *pa_out,
+                                  uint64_t *next) {
+  uint64_t table_va = pml4;
+
+  for (int level = 0; level < 4; level++) {
+    uint64_t entry = 0;
+    int shift = 39 - level * 9;
+    uint64_t size = 1ULL << shift;
+
+    if (read_entry(table_va + ((va >> shift) & 0x1FF) * 8, &entry) ||
+        !PAGE_P(entry))
+      return -1;
+    if (level == 3 || ((level == 1 || level == 2) && PAGE_PS(entry))) {
+      *pa_out = (PAGE_PA(entry) & ~(size - 1)) | (va & (size - 1));
+      *next = (va & ~(size - 1)) + size;
+      return 0;
+    }
+    if (refuse_in_wake_copy_1160("page table", PAGE_PA(entry)))
+      return -1;
+    table_va = pa_to_dmap(PAGE_PA(entry));
+  }
+  return -1;
+}
+
+/*
+ * The wake blob runs on PID 1's page tables from the kernel code cave, reads
+ * the boot files through the aliases and writes the copy through DMAP.  New
+ * alias tables are checked in tx_alloc_table; this checks PID 1's PML4, the
+ * alias tables already present, the DMAP tables for the copy and the code
+ * cave with the tables that map it.
+ */
+static int preflight_wake_copy_1160(const struct alias_tx_1160 *tx,
+                                    const struct alias_page_1160 *pages,
+                                    size_t page_count) {
+  uint64_t cave_va = ktext + env_offset.KERNEL_CODE_CAVE;
+  uint64_t pa = 0;
+  uint64_t next = 0;
+
+  if (refuse_in_wake_copy_1160("page table", tx->syscore_pml4 - dmap))
+    return -1;
+  for (size_t i = 0; i < page_count; i++)
+    if (check_alias_tables_1160(tx->syscore_pml4, pages[i].target_va))
+      return -1;
+  for (uint64_t va = dmap + cave; va < dmap + wake_copy_end_1160; va = next)
+    if (walk_wake_mapping_1160(tx->syscore_pml4, va, &pa, &next))
+      return -1;
+  for (uint64_t va = cave_va; va < cave_va + WAKE_CAVE_SIZE_1160;
+       va += X86_PAGE_SIZE)
+    if (walk_wake_mapping_1160(tx->syscore_pml4, va, &pa, &next) ||
+        refuse_in_wake_copy_1160("wake code page", pa & ~(X86_PAGE_SIZE - 1)))
+      return -1;
+  return 0;
+}
+#endif
+
 static int build_alias_plan(const struct linux_info *info, void *bzimage,
                             size_t bzimage_mapping_size, void *initrd,
                             size_t initrd_mapping_size,
@@ -461,6 +568,10 @@ static int build_alias_plan(const struct linux_info *info, void *bzimage,
   struct alias_page_1160 *pages = NULL;
   void *info_page = MAP_FAILED;
   size_t at = 0;
+#if PS5_1160_BOUNDED_BOOT_FILES
+  size_t overwritten = 0;
+  size_t first_overwritten = 0;
+#endif
 
   if (add_size(1, bz_pages, &page_count) ||
       add_size(page_count, initrd_pages, &page_count) ||
@@ -500,17 +611,24 @@ static int build_alias_plan(const struct linux_info *info, void *bzimage,
       return -1;
     }
 #if PS5_1160_BOUNDED_BOOT_FILES
-    if (pa_in_wake_copy_1160(pages[i].source_pa)) {
-      notify("11.60 loader refused staging: source page %zu at 0x%llx is "
-             "inside the Linux copy range.\n",
-             i, (unsigned long long)pages[i].source_pa);
-      fflush(stdout);
-      munmap(info_page, PAGE_SIZE);
-      free(pages);
-      return -1;
-    }
+    if (source_overwritten_1160(i, pages[i].source_pa) && overwritten++ == 0)
+      first_overwritten = i;
 #endif
   }
+#if PS5_1160_BOUNDED_BOOT_FILES
+  /* These pages come from this run's mmap, so another run may get others. */
+  if (overwritten != 0) {
+    notify("11.60 loader refused staging: %zu source pages would be "
+           "overwritten by the Linux copy, first page %zu at 0x%llx. Run the "
+           "loader again.\n",
+           overwritten, first_overwritten,
+           (unsigned long long)pages[first_overwritten].source_pa);
+    fflush(stdout);
+    munmap(info_page, PAGE_SIZE);
+    free(pages);
+    return -1;
+  }
+#endif
 
   *pages_out = pages;
   *page_count_out = page_count;
@@ -577,6 +695,13 @@ int stage_linux_aliases_1160(const struct linux_info *info, void *bzimage,
       goto out;
     }
   }
+#if PS5_1160_BOUNDED_BOOT_FILES
+  if (preflight_wake_copy_1160(&tx, pages, page_count)) {
+    checkpoint("REFUSED wake copy preflight; no writes attempted");
+    goto out;
+  }
+  checkpoint("wake copy preflight passed");
+#endif
   checkpoint("target range preflight passed");
 
   checkpoint("installing checked aliases");

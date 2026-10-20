@@ -26,6 +26,9 @@ CONFIG = ROOT / "include/config.h"
 WAKE_MAKEFILE = ROOT / "shellcode_kernel_port_1160/Makefile"
 WAKE_MAIN = ROOT / "shellcode_kernel/main.c"
 INNER_HV_BOOT_LINUX = ROOT / "shellcode_hv/boot_linux.c"
+INNER_HV_BOOT_LINUX_H = ROOT / "shellcode_hv/boot_linux.h"
+INNER_HV_MAIN = ROOT / "shellcode_hv/main.c"
+WAKE_UTILS = ROOT / "shellcode_kernel/utils.c"
 BOOT_FILES = ROOT / "include/boot_files_1160.h"
 
 RUN15_ELF_SHA256 = (
@@ -321,13 +324,25 @@ bounded_refusals = (
     b"11.60 loader refused boot files: bzImage and initrd.img need %zu bytes"
     b" staged, allowed %llu.",
     b"11.60 loader refused cmdline.txt: nokaslr would run Linux inside",
-    b"11.60 loader refused staging: source page %zu at 0x%llx is inside the"
-    b" Linux copy range.",
+    b"11.60 loader refused cmdline.txt: mem= and memmap= can undo the DMA"
+    b" reservation.",
+    b"11.60 loader refused vram.txt: 0x%zx bytes, needs a multiple of 16 MiB"
+    b" up to 0x%llx.",
+    b"11.60 loader refused staging: %zu source pages would be overwritten by"
+    b" the Linux copy, first page %zu at 0x%llx. Run the loader again.",
     b"11.60 loader refused staging: alias table page 0x%llx is inside the"
     b" Linux copy range.",
+    b"11.60 loader refused staging: %s 0x%llx is inside the Linux copy range."
+    b" Reboot before trying again.",
+    b"wake code page",
+    b"REFUSED wake copy preflight; no writes attempted",
+    b"11.60 checked Linux alias staging failed. Nothing is armed, so the"
+    b" loader can be run again.",
     b"11.60 #SX stack page 0x%llx is inside the Linux copy range",
     b"11.60 bounded: bzImage protocol 0x%x",
     b"11.60 bounded: wake copy 0x%llx-0x%llx",
+    # What check_bzimage_1160 looks for to see CONFIG_RANDOMIZE_BASE.
+    b"Physical KASLR disabled: no suitable memory region!",
 )
 if bounded:
     refusal_markers = bounded_refusals
@@ -407,8 +422,68 @@ for required in (
     "if (setup_sects == 0 || setup_sects > BZ_MAX_SETUP_SECTS_1160)",
     "if (BZ_LOAD_PA_1160 + layout.payload_size > layout.decompress_base)",
     "layout.decompress_end > BZ_DECOMPRESS_LIMIT_1160)",
+    # Keeps decompress_base + init_size from wrapping.
+    "if (pref_address > BZ_DECOMPRESS_LIMIT_1160 ||",
+    '#define BZ_KASLR_MESSAGE_1160 "Physical KASLR disabled: no suitable memory region!"',
+    "return BZ_KASLR_1160;",
+    "if (bz_u64_1160(image + 0x250) != 0)",
+    "{6, {'0', '7', '0', '7', '0', '1'}},",
+    "{6, {'0', '7', '0', '7', '0', '2'}},",
+    "#define VRAM_TOP_1160 0x470000000ULL",
+    "#define VRAM_UNIT_1160 0x1000000ULL",
+    "#define HV_STACKS_END_1160 0x11000f000ULL",
 ):
     assert required in boot_files_source, required
+assert "'0', '7', '0', '7', '0'}}" not in boot_files_source
+
+# vram.txt: VRAM sits right below 0x470000000, programmed in 16 MiB units,
+# and the RAM under it holds the wake copy and the 16 HV stacks.
+assert "#define VRAM_BASE (0x470000000 - info.vram_size)" in (
+    INNER_HV_BOOT_LINUX_H.read_text()
+)
+assert "#define MAXCPU 16" in INNER_HV_BOOT_LINUX_H.read_text()
+assert "(uintptr_t)hv_base_rsp + ((uint64_t)(cpu_id)*hv_stack_size);" in (
+    INNER_HV_MAIN.read_text()
+)
+assert "GCMC_VM_FB_OFFSET) = vram_start >> 24;" in inner_hv_boot_linux_source
+assert "static_assert(HV_STACKS_END_1160 == hv_base_rsp + 15 * hv_stack_size," in (
+    loader_source
+)
+assert 0x100000000 + 0x10000000 + 15 * 0x1000 == 0x11000F000
+assert (0x470000000 - 0x11000F000) & ~0xFFFFFF == 0x35F000000
+
+# KASLR has to stay on: nokaslr, mem= and memmap= are refused in the bounded
+# build, before the Wi-Fi firmware is written to the boot drive.
+assert 'cmdline_has_option_1160(cmdline, "mem=")' in loader_source
+assert 'cmdline_has_option_1160(cmdline, "memmap=")' in loader_source
+assert loader_source.count("dump_device_firmwares(initrd_path)") == 2
+assert (
+    "#if !PS5_1160_BOUNDED_BOOT_FILES\n  if (dump_device_firmwares(initrd_path)"
+    in loader_source
+)
+assert loader_source.index('"memmap=")') < loader_source.rindex(
+    "dump_device_firmwares(initrd_path)"
+)
+
+# The relaxed source page test relies on the wake blob copying forward, one
+# byte at a time, bzImage then initrd, and on the cave size the blob fits.
+wake_utils_source = WAKE_UTILS.read_text()
+assert "for (uint64_t i = 0; i < len; i++) {\n    d[i] = s[i];" in wake_utils_source
+for required in (
+    "memcpy((void *)PHYS_TO_DMAP(info.bzimage), (void *)bzimage,",
+    "memcpy((void *)PHYS_TO_DMAP(info.initrd), (void *)initrd, info.initrd_size);",
+    "info.initrd = cave_bzImage + ALIGN_UP(info.bzimage_size, PAGE_SIZE);",
+):
+    assert required in boot_linux_source, required
+assert boot_linux_source.index(
+    "memcpy(&info, (void *)args.linux_info_va, sizeof(struct linux_info));"
+) < boot_linux_source.index("memcpy((void *)PHYS_TO_DMAP(info.bzimage)")
+assert "#define WAKE_CAVE_SIZE_1160 0x5000ULL" in staging_source
+assert "#define KTEXT_1160_END 0xD30000ULL" in hv_defeat_source
+assert "#define CODE_CAVE_CAPACITY (KTEXT_1160_END - 0xD2B000ULL)" in hv_defeat_source
+assert 0xD30000 - 0xD2B000 == 0x5000 == 20480
+assert "pa_in_wake_copy_1160(sx_ist_pa - PAGE_SIZE)" in hv_defeat_source
+assert "if (preflight_wake_copy_1160(&tx, pages, page_count)) {" in staging_source
 assert "#error \"the bounded 11.60 build must show its refusals\"" in loader_source
 # Payload menus only show notify().  Every lowercase "refused" message,
 # including the bounded ones, has to go through it.

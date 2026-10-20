@@ -18,6 +18,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* End of kernel_info_offset, the last field of a 2.15 setup header. */
 #define BZ_HEADER_END_1160 0x26cU
@@ -35,6 +36,25 @@
 /* MAX_COMBINED_MAPPING in source/loader_staging_1160.c: bzImage plus initrd,
  * each rounded up to whole 16-KiB pages. */
 #define MAX_STAGED_BOOT_FILES_1160 (160ULL * 1024ULL * 1024ULL)
+
+/*
+ * The inner HV maps VRAM at [0x470000000 - vram_size, 0x470000000)
+ * (VRAM_BASE in shellcode_hv/boot_linux.h) and programs it in 16 MiB units.
+ * The RAM below it has to hold the wake copy and the HV stacks, which end at
+ * hv_base_rsp + 15 * hv_stack_size = 0x11000f000.
+ */
+#define VRAM_TOP_1160 0x470000000ULL
+#define VRAM_UNIT_1160 0x1000000ULL
+#define HV_STACKS_END_1160 0x11000f000ULL
+#define MAX_VRAM_SIZE_1160                                                     \
+  ((VRAM_TOP_1160 - HV_STACKS_END_1160) & ~(VRAM_UNIT_1160 - 1U))
+
+/*
+ * kaslr.o, the decompressor's KASLR code, is only linked with
+ * CONFIG_RANDOMIZE_BASE=y.  This is its warning when it finds no slot, and
+ * the kernel proper does not contain it.
+ */
+#define BZ_KASLR_MESSAGE_1160 "Physical KASLR disabled: no suitable memory region!"
 
 #define BZ_LOADED_HIGH_1160 0x01U
 #define BZ_XLF_KERNEL_64_1160 0x0001U
@@ -54,6 +74,8 @@ enum bz_refusal_1160 {
   BZ_PREF_ADDRESS_1160 = 10,
   BZ_INIT_SIZE_1160 = 11,
   BZ_CMDLINE_SIZE_1160 = 12,
+  BZ_KASLR_1160 = 13,
+  BZ_SETUP_DATA_1160 = 14,
 };
 
 struct bz_layout_1160 {
@@ -134,7 +156,8 @@ static inline int check_bzimage_1160(const uint8_t *image, size_t size,
    * below base, as in Runs 15 to 19 (0xd18400 < 0x1000000).
    */
   pref_address = bz_u64_1160(image + 0x258);
-  if ((pref_address & (alignment - 1U)) != 0)
+  if (pref_address > BZ_DECOMPRESS_LIMIT_1160 ||
+      (pref_address & (alignment - 1U)) != 0)
     return BZ_PREF_ADDRESS_1160;
   aligned_load = (BZ_LOAD_PA_1160 + alignment - 1U) & ~((uint64_t)alignment - 1U);
   layout.decompress_base =
@@ -151,18 +174,47 @@ static inline int check_bzimage_1160(const uint8_t *image, size_t size,
   if (bz_u32_1160(image + 0x238) < BZ_MIN_CMDLINE_SIZE_1160)
     return BZ_CMDLINE_SIZE_1160;
 
+  /*
+   * Under the DMA map KASLR is what moves the kernel out of 16 MiB to 1 GiB;
+   * without it the decompressor runs Linux at its base, inside the
+   * reservation.  The header does not show CONFIG_RANDOMIZE_BASE, so look for
+   * kaslr.o's message in the code the inner HV loads.
+   */
+  {
+    static const char message[] = BZ_KASLR_MESSAGE_1160;
+    const size_t n = sizeof(message) - 1U;
+    const uint8_t *code = image + layout.setup_size;
+    int found = 0;
+
+    for (uint64_t i = 0; !found && i + n <= layout.payload_size; i++)
+      found = code[i] == (uint8_t)message[0] &&
+              memcmp(code + i, message, n) == 0;
+    if (!found)
+      return BZ_KASLR_1160;
+  }
+
+  /* The inner HV copies the header into boot_params as it is, and Linux
+   * would follow a setup_data list from the file.  Loaders fill it in. */
+  if (bz_u64_1160(image + 0x250) != 0)
+    return BZ_SETUP_DATA_1160;
+
   if (out != NULL)
     *out = layout;
   return BZ_OK_1160;
 }
 
-/* A cpio archive or one of the kernel's initramfs decompressors. */
+/*
+ * A newc cpio archive or one of the kernel's initramfs decompressors, after
+ * any NUL padding.  init/initramfs.c skips leading NULs, starts a cpio header
+ * only at a multiple of 4 and rejects the old odc format (070707).
+ */
 static inline int check_initrd_1160(const uint8_t *initrd, size_t size) {
   static const struct {
     uint8_t len;
     uint8_t bytes[6];
   } magics[] = {
-      {5, {'0', '7', '0', '7', '0'}},            /* newc cpio (070701/2) */
+      {6, {'0', '7', '0', '7', '0', '1'}},       /* newc cpio */
+      {6, {'0', '7', '0', '7', '0', '2'}},       /* newc cpio with checksums */
       {4, {0x28, 0xb5, 0x2f, 0xfd}},             /* zstd */
       {2, {0x1f, 0x8b}},                         /* gzip */
       {6, {0xfd, '7', 'z', 'X', 'Z', 0x00}},     /* xz */
@@ -171,18 +223,45 @@ static inline int check_initrd_1160(const uint8_t *initrd, size_t size) {
       {3, {'B', 'Z', 'h'}},                      /* bzip2 */
       {4, {0x89, 'L', 'Z', 'O'}},                /* lzo */
   };
+  size_t off = 0;
 
   if (initrd == NULL || size < INITRD_MIN_SIZE_1160)
     return -1;
+  while (off < size && initrd[off] == 0)
+    off++;
   for (size_t i = 0; i < sizeof(magics) / sizeof(magics[0]); i++) {
     size_t n = magics[i].len;
-    size_t j = 0;
-    while (j < n && initrd[j] == magics[i].bytes[j])
-      j++;
-    if (j == n)
-      return 0;
+    if (n > size - off || memcmp(initrd + off, magics[i].bytes, n) != 0)
+      continue;
+    if (magics[i].bytes[0] == '0' && (off & 3U) != 0)
+      return -1;
+    return 0;
   }
   return -1;
+}
+
+/* Returns 0 or -1 for a vram.txt size the inner HV cannot place. */
+static inline int check_vram_size_1160(uint64_t vram_size) {
+  if (vram_size == 0 || vram_size % VRAM_UNIT_1160 != 0 ||
+      vram_size > MAX_VRAM_SIZE_1160)
+    return -1;
+  return 0;
+}
+
+/*
+ * Nonzero when cmdline has an option starting with prefix, as in "mem=".
+ * Options start the line or follow whitespace, or the opening quote that the
+ * kernel's next_arg() strips.
+ */
+static inline int cmdline_has_option_1160(const char *cmdline,
+                                          const char *prefix) {
+  size_t n = strlen(prefix);
+
+  for (const char *p = cmdline; *p != '\0'; p++)
+    if ((p == cmdline || (unsigned char)p[-1] <= ' ' || p[-1] == '"') &&
+        strncmp(p, prefix, n) == 0)
+      return 1;
+  return 0;
 }
 
 #endif
