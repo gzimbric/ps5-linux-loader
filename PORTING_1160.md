@@ -137,8 +137,9 @@ target name: `linux-1160` always builds the original map, setting
 have to be built in separate `make` runs because they share the nested blobs.
 
 Run 18 booted this ELF once with a CachyOS image carrying the exact Run 15
-boot files; see the hardware validation status below. It has not been booted
-with the Ubuntu 24.04 image. For testers, the ELF is attached to the
+boot files. Run 19 booted it once with the CI-built Ubuntu 24.04 image from
+release `ubuntu2404-1160-build-3`, the image the tester guide uses; see the
+hardware validation status below. For testers, the ELF is attached to the
 [`firmware-11.60-dma-e820-run18`](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-dma-e820-run18)
 release. Check its SHA-256 against the value above before sending it. The
 [tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/ubuntu2404-tester-guide.md)
@@ -223,7 +224,36 @@ testers have not been reproduced on this console, so Run 18 does not show
 that the reservation fixes them. The I/O check was short and covered only the
 USB root. DRM reported a connected 1920x1080 output and a desktop session
 started, but the picture was not recorded as directly observed, so Run 18 is
-not a display result. Run 15 remains the release baseline.
+not a display result.
+
+Run 19 booted the DMA E820 build once more on the same console, with the
+image and ELF from the tester guide: the CI-built Ubuntu 24.04 image from
+release `ubuntu2404-1160-build-3` and the ELF from the
+`firmware-11.60-dma-e820-run18` release, with the hash above. The image's
+`bzImage` is the same as in Runs 15 to 18, and its `initrd.img` is a new CI
+build of the validated size. The ELF was sent once from cold boot, and the
+loader's 2,832 bytes of output were byte-identical to Run 18. After automatic
+Rest Mode, one press of the PS button woke it, the light turned white, and
+TCP port 22 opened about 20 seconds after the wake was reported. The operator
+directly observed the HDMI picture, and a GNOME session logged in
+automatically. Ubuntu 24.04.5 with Linux 7.1.7 reached authenticated wired SSH.
+The e820 map was the same as in Run 18, with `[0x01000000, 0x40000000)`
+reserved, and MemTotal was again 14,783,608 kB. The tester guide's checks were
+run as written. The storage error search printed nothing. The optional I/O
+check wrote three 4 GiB files to the USB root, dropped the page cache and
+re-read all three with matching hashes in under two minutes; the script
+reported a pass. A scan of the whole boot's kernel log found no Buffer I/O,
+blk_update_request, uas_eh, AMD-Vi, DMAR or machine check lines and no BUG,
+Oops or Call Trace. See the
+[Run 19 evidence](https://github.com/gzimbric/ps5-linux-porting/blob/main/evidence/11.60-ubuntu-ci-run-19.md).
+
+Like Run 18, Run 19 is one boot on one console with no A/B control, and the
+testers' read/write errors were not reproduced, so it does not show that the
+reservation fixes them. Wi-Fi (the image has no driver), Bluetooth, M.2,
+sustained GPU load, a soak and repeat boots were not tested. It shows that the
+image and ELF from the tester guide boot on this console with a picture, apply
+the intended map and pass the guide's checks. Run 18 remains the validation
+run for this build, and Run 15 remains the release baseline.
 
 ## Hardware test boundary
 

@@ -11,8 +11,10 @@
 > build, evidence boundary, and fail-closed hardware requirements.
 >
 > This `firmware-11.60-dma-e820` branch adds an opt-in build with upstream's
-> 13.60 low-memory DMA reservation. Run 18 booted it once, and its ELF is
-> attached to the `firmware-11.60-dma-e820-run18` release for testers.
+> 13.60 low-memory DMA reservation. Run 18 booted it once with CachyOS and
+> Run 19 once with the CI-built Ubuntu 24.04 image from the tester guide
+> (`ubuntu2404-1160-build-3`), both on one CFI-1115B. Its ELF is attached to
+> the `firmware-11.60-dma-e820-run18` release for testers.
 
 Features:
 
