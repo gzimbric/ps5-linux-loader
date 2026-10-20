@@ -18,6 +18,33 @@
 static_assert(PAGE_SIZE == X86_PAGE_SIZE * 4,
               "11.60 staging requires four 4-KiB frames per logical page");
 
+#if PS5_1160_BOUNDED_BOOT_FILES
+#include "boot_files_1160.h"
+
+/* fetch_linux refuses oversized boot files against the same cap. */
+static_assert(MAX_COMBINED_MAPPING == MAX_STAGED_BOOT_FILES_1160,
+              "the loader and staging caps differ");
+
+/*
+ * The wake blob writes [cave, cave_bzImage + bzImage + initrd) through DMAP
+ * before Linux starts: HV page tables and code, linux_info, bzImage, initrd.
+ * The exact Run 15 files covered [0x100000000, 0x1040048c0).  Larger files
+ * cover more, so refuse any source, info or alias table page in that range;
+ * the copy would overwrite it before or while reading it.
+ */
+static_assert(cave_bzImage + MAX_COMBINED_MAPPING <= hv_base_rsp - hv_stack_size,
+              "staged Linux files would reach the HV stacks");
+static_assert(cave_bzImage + MAX_COMBINED_MAPPING <= cave + 0x40000000ULL,
+              "staged Linux files would leave the HV identity leaf");
+
+static uint64_t wake_copy_end_1160;
+
+int pa_in_wake_copy_1160(uint64_t pa) {
+  return wake_copy_end_1160 != 0 && pa < wake_copy_end_1160 &&
+         pa + PAGE_SIZE > cave;
+}
+#endif
+
 struct alias_page_1160 {
   uint64_t target_va;
   const uint8_t *source;
@@ -280,6 +307,16 @@ static int tx_alloc_table(struct alias_tx_1160 *tx, uint64_t *pa_out) {
     munmap(mapping, PAGE_SIZE);
     return -1;
   }
+#if PS5_1160_BOUNDED_BOOT_FILES
+  if (pa_in_wake_copy_1160(pa)) {
+    notify("11.60 loader refused staging: alias table page 0x%llx is inside "
+           "the Linux copy range.\n",
+           (unsigned long long)pa);
+    fflush(stdout);
+    munmap(mapping, PAGE_SIZE);
+    return -1;
+  }
+#endif
   tx->tables[tx->table_count].mapping = mapping;
   tx->tables[tx->table_count].pa = pa;
   tx->table_count++;
@@ -462,6 +499,17 @@ static int build_alias_plan(const struct linux_info *info, void *bzimage,
       free(pages);
       return -1;
     }
+#if PS5_1160_BOUNDED_BOOT_FILES
+    if (pa_in_wake_copy_1160(pages[i].source_pa)) {
+      notify("11.60 loader refused staging: source page %zu at 0x%llx is "
+             "inside the Linux copy range.\n",
+             i, (unsigned long long)pages[i].source_pa);
+      fflush(stdout);
+      munmap(info_page, PAGE_SIZE);
+      free(pages);
+      return -1;
+    }
+#endif
   }
 
   *pages_out = pages;
@@ -496,6 +544,13 @@ int stage_linux_aliases_1160(const struct linux_info *info, void *bzimage,
     return -1;
   }
 
+#if PS5_1160_BOUNDED_BOOT_FILES
+  wake_copy_end_1160 = cave_bzImage + combined_mapping;
+  printf("11.60 bounded: wake copy 0x%llx-0x%llx (%zu logical pages)\n",
+         (unsigned long long)cave, (unsigned long long)wake_copy_end_1160,
+         (size_t)(1 + combined_mapping / PAGE_SIZE));
+  fflush(stdout);
+#endif
   checkpoint("building checked source plan");
   if (tx_init(&tx, 1 + combined_mapping / PAGE_SIZE)) {
     checkpoint("REFUSED invalid PID-1/current pmap state; no writes attempted");

@@ -25,6 +25,8 @@ BOOT_LINUX = ROOT / "shellcode_kernel/boot_linux.c"
 CONFIG = ROOT / "include/config.h"
 WAKE_MAKEFILE = ROOT / "shellcode_kernel_port_1160/Makefile"
 WAKE_MAIN = ROOT / "shellcode_kernel/main.c"
+INNER_HV_BOOT_LINUX = ROOT / "shellcode_hv/boot_linux.c"
+BOOT_FILES = ROOT / "include/boot_files_1160.h"
 
 RUN15_ELF_SHA256 = (
     "422b87ec39ca0edfce8dddd609c2eff1cc7adcb2732b7909b76fafbd60dd2336"
@@ -51,6 +53,11 @@ visible_refusals = visible_refusals_text == "1"
 wifi_fw_text = os.environ.get("PS5_1160_WIFI_FW", "0")
 assert wifi_fw_text in ("0", "1")
 wifi_fw_enabled = wifi_fw_text == "1"
+bounded_text = os.environ.get("PS5_1160_BOUNDED_BOOT_FILES", "0")
+assert bounded_text in ("0", "1")
+bounded = bounded_text == "1"
+# The bounded build is the visible DMA E820 build with the size gates swapped.
+assert not bounded or (dma_e820_safe and visible_refusals)
 if diagnostic_build:
     diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE", "5")
     diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT", "29")
@@ -178,6 +185,7 @@ if release_check:
     assert not dma_e820_safe, "Run 15 release check requires the original E820 map"
     assert not visible_refusals, "Run 15 release check requires printf-only refusals"
     assert not wifi_fw_enabled, "Run 15 release check has no Wi-Fi firmware range"
+    assert not bounded, "Run 15 release check requires the exact Run 15 sizes"
     assert (diag_pre_stage, diag_op_limit, diag_clear_mp3_buffers) == (5, 29, 0), (
         "release check requires the hardware-tested Run 15 gates",
         diag_pre_stage,
@@ -305,10 +313,31 @@ shown_refusals = (
     b"11.60 loader refused bzImage: %zu bytes, needs exactly %llu.",
     b"11.60 loader refused initrd.img: %zu bytes, needs exactly %llu.",
 )
-if visible_refusals:
-    refusal_markers, absent_refusals = shown_refusals, printed_refusals
+bounded_refusals = (
+    b"11.60 loader refused bzImage: %zu bytes, allowed %u to %llu.",
+    b"11.60 loader refused bzImage: boot header check %d failed.",
+    b"11.60 loader refused initrd.img: %zu bytes, allowed %u to %llu.",
+    b"11.60 loader refused initrd.img: not a cpio or compressed initramfs.",
+    b"11.60 loader refused boot files: bzImage and initrd.img need %zu bytes"
+    b" staged, allowed %llu.",
+    b"11.60 loader refused cmdline.txt: nokaslr would run Linux inside",
+    b"11.60 loader refused staging: source page %zu at 0x%llx is inside the"
+    b" Linux copy range.",
+    b"11.60 loader refused staging: alias table page 0x%llx is inside the"
+    b" Linux copy range.",
+    b"11.60 #SX stack page 0x%llx is inside the Linux copy range",
+    b"11.60 bounded: bzImage protocol 0x%x",
+    b"11.60 bounded: wake copy 0x%llx-0x%llx",
+)
+if bounded:
+    refusal_markers = bounded_refusals
+    absent_refusals = (*printed_refusals, *shown_refusals)
+elif visible_refusals:
+    refusal_markers = shown_refusals
+    absent_refusals = (*printed_refusals, *bounded_refusals)
 else:
-    refusal_markers, absent_refusals = printed_refusals, shown_refusals
+    refusal_markers = printed_refusals
+    absent_refusals = (*shown_refusals, *bounded_refusals)
 for marker in absent_refusals:
     assert marker not in elf, marker
 for marker in (
@@ -350,6 +379,78 @@ for required in (
 assert "mlock(" not in staging_source
 assert "VALIDATED_BZIMAGE_SIZE_1160 12702720ULL" in loader_source
 assert "VALIDATED_INITRD_SIZE_1160 54376639ULL" in loader_source
+
+# The bounded checks mirror how the inner HV loads Linux.  If any of these
+# lines change, revisit include/boot_files_1160.h before relaxing the audit.
+inner_hv_boot_linux_source = INNER_HV_BOOT_LINUX.read_text()
+boot_files_source = BOOT_FILES.read_text()
+for required in (
+    "uintptr_t kernel_pa = 0x100000;",
+    "uintptr_t setup_pa = 0x10000;",
+    "uintptr_t cmdline_pa = 0x20000;",
+    "memcpy(shdr, &bzimage_bp->hdr, sizeof(struct setup_header));",
+    "size_t setup_size = (shdr->setup_sects + 1) * 512;",
+    "size_t kernel_size = shdr->syssize * 16;",
+    "memcpy((void *)kernel_pa, (void *)(info.bzimage + setup_size), kernel_size);",
+    "(void *)(kernel_pa + 0x200);",
+    "bp->ext_ramdisk_image = info.initrd >> 32;",
+    "append_e820_table(bp, 0x000100000, 0x03fffc000, E820_TYPE_RAM);",
+    "append_e820_table(bp, 0x001000000, 0x040000000, E820_TYPE_RESERVED);",
+):
+    assert required in inner_hv_boot_linux_source, required
+for required in (
+    "#define BZ_LOAD_PA_1160 0x100000ULL",
+    "#define BZ_DECOMPRESS_LIMIT_1160 0x3fffc000ULL",
+    "#define BZ_MIN_VERSION_1160 0x020fU",
+    "#define BZ_XLF_KERNEL_64_1160 0x0001U",
+    "#define BZ_XLF_CAN_BE_LOADED_ABOVE_4G_1160 0x0002U",
+    "if (setup_sects == 0 || setup_sects > BZ_MAX_SETUP_SECTS_1160)",
+    "if (BZ_LOAD_PA_1160 + layout.payload_size > layout.decompress_base)",
+    "layout.decompress_end > BZ_DECOMPRESS_LIMIT_1160)",
+):
+    assert required in boot_files_source, required
+assert "#error \"the bounded 11.60 build must show its refusals\"" in loader_source
+# Payload menus only show notify().  Every lowercase "refused" message,
+# including the bounded ones, has to go through it.
+for source in (loader_source, staging_source):
+    for match in re.finditer(r'"11\.60 loader refused', source):
+        assert source[: match.start()].rstrip().endswith("notify("), (
+            source[match.start() : match.start() + 72]
+        )
+assert (
+    'notify("11.60 #SX stack page 0x%llx is inside the Linux copy range\\n"'
+    in hv_defeat_source
+)
+assert "#define MAX_STAGED_BOOT_FILES_1160 (160ULL * 1024ULL * 1024ULL)" in boot_files_source
+assert "static_assert(MAX_COMBINED_MAPPING == MAX_STAGED_BOOT_FILES_1160," in staging_source
+assert loader_source.count("check_bzimage_1160(bzimage, bzimage_size, &bz_layout)") == 1
+assert loader_source.count("check_initrd_1160(initrd, initrd_size)") == 1
+assert "#define MAX_COMBINED_MAPPING (160ULL * 1024ULL * 1024ULL)" in staging_source
+assert "#define cave_bzImage cave_linux_info + PAGE_SIZE" in config_source
+assert "#define hv_base_rsp (cave + 0x10000000ULL)" in config_source
+
+# The wake copy covers [cave, 0x100009000 + bzImage + initrd).  With the
+# 160 MiB staging cap it ends below CPU 0's HV stack and inside the 1-GiB
+# identity leaf that maps the cave.
+cave_pa = 0x100000000
+cave_bzimage_pa = cave_pa + 0x3000 + 0x2000 + 0x4000
+wake_copy_cap_end = cave_bzimage_pa + 160 * 1024 * 1024
+assert cave_bzimage_pa == 0x100009000
+assert wake_copy_cap_end <= cave_pa + 0x10000000 - 0x1000
+assert wake_copy_cap_end <= cave_pa + 0x40000000
+# The exact Run 15 files: 1 + 776 + 3,319 logical pages, copy end 0x1040048bf.
+assert cave_bzimage_pa + 776 * 0x4000 + 54376639 == 0x1040048BF
+assert 0x100000 + 792640 * 16 == 0xD18400 <= 0x1000000
+assert 0x1000000 + 0x2AC9000 <= 0x3FFFC000
+
+# The exact gates must not reach the bounded ELF, and must stay in the others.
+exact_size_immediates = (u32(12702720), u32(54376639))
+if bounded:
+    for value in exact_size_immediates:
+        assert value not in elf, value
+else:
+    for value in exact_size_immediates:
+        assert value in elf, value
 
 # The display-enabled build mirrors Sonic's pre-Linux handoff and must never
 # silently regress to the run-7 headless compile.  Its two large MP3 buffers
@@ -736,4 +837,5 @@ print(
     f"11.60 audit OK:{diag_label} elf={len(elf)} wake={len(wake)} "
     f"inner_hv={len(inner_hv)} ap={len(ap)} dma-e820-safe={int(dma_e820_safe)}"
     f" visible-refusals={int(visible_refusals)} wifi-fw={int(wifi_fw_enabled)}"
+    f" bounded-boot-files={int(bounded)}"
 )

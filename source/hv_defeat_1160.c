@@ -2,6 +2,9 @@
 
 #include "../shellcode_break_hv/break_hv.h"
 #include "config.h"
+#if PS5_1160_BOUNDED_BOOT_FILES
+#include "loader_staging_1160.h"
+#endif
 #include "utils.h"
 #include <machine/segments.h>
 #include <machine/tss.h>
@@ -578,7 +581,18 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
   }
   checkpoint_1160_hv("runtime preflight passed");
 
+#if PS5_1160_BOUNDED_BOOT_FILES
+  /* The wake blob runs on this page while it copies Linux into the cave. */
+  uint64_t sx_ist_pa = alloc_page();
+  if (pa_in_wake_copy_1160(sx_ist_pa)) {
+    notify("11.60 #SX stack page 0x%llx is inside the Linux copy range\n",
+           (unsigned long long)sx_ist_pa);
+    return -1;
+  }
+  sx_ist = pa_to_dmap(sx_ist_pa);
+#else
   sx_ist = pa_to_dmap(alloc_page());
+#endif
   if (sx_ist == dmap || build_sx_rop(sx_ist, shellcode_kernel_len))
     return -1;
 

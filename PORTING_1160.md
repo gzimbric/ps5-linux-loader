@@ -179,6 +179,51 @@ console at boot and is not in this repository or any release.
 can pick it up. The check prints the hash, which is not pinned. This build has
 not been booted on hardware.
 
+`make linux-1160-dma-e820-bounded` and `make linux-1160-dma-e820-bounded-wifi`
+(and their `-check` targets, with the same dumps) build
+`bin/ps5-linux-loader-1160-dma-e820-bounded.elf` and
+`bin/ps5-linux-loader-1160-dma-e820-bounded-wifi.elf`, for kernels and initrds
+other than the Run 15 pair. They are the visible and Wi-Fi builds with the two
+exact-size gates replaced by checks on what the inner HV relies on; the HV and
+wake code take the sizes from `linux_info`. They refuse:
+
+- a `bzImage` under 620 bytes or over 64 MiB, an `initrd.img` under 512 bytes
+  or over 128 MiB, or a pair over 160 MiB once each is rounded up to 16-KiB
+  pages. Under that cap the wake copy ends by `0x10a009000`, below CPU 0's HV
+  stack;
+- a setup header that lacks any of: boot flag `0xaa55`, `HdrS`, protocol
+  2.15 or later, `setup_sects` 1 to 64 (the inner HV does not read 0 as 4),
+  `syssize * 16` bytes inside the file, `LOADED_HIGH`, `XLF_KERNEL_64`,
+  `XLF_CAN_BE_LOADED_ABOVE_4G`, a relocatable kernel, a power-of-two
+  `kernel_alignment` of 2 to 16 MiB with `pref_address` aligned to it, a
+  payload at `0x100000` that ends by the decompression base (15 MiB with the
+  usual 16 MiB base), a decompression range that ends by `0x3fffc000`, and
+  `cmdline_size` of at least 2047;
+- an `initrd.img` that is not a newc cpio or zstd, gzip, xz, lz4, lzma, bzip2
+  or lzo data;
+- `nokaslr` in `cmdline.txt`;
+- any `bzImage`, `initrd.img`, `linux_info` or alias page-table page, or the
+  #SX stack page, inside `[0x100000000, end of the wake copy)`, which the wake
+  blob overwrites before Linux starts.
+
+KASLR is required with the DMA map: the only RAM it leaves below 1 GiB is 1 to
+16 MiB, so the kernel has to be moved above the reservation. Hence the
+`nokaslr` refusal, and the kernel must be built with `CONFIG_RANDOMIZE_BASE=y`,
+which the header does not show.
+
+Every refusal is a notification, so payload menus show it. "boot header check
+N failed" means 1 short file, 2 boot flag, 3 `HdrS`, 4 protocol, 5
+`setup_sects`, 6 `syssize`, 7 load flags, 8 not relocatable, 9
+`kernel_alignment`, 10 `pref_address` or a payload over 15 MiB, 11
+`init_size`, 12 `cmdline_size`. The checks also run
+`tests/test_boot_files_1160.c`; `PS5_1160_TEST_BZIMAGE=/path/to/bzImage` makes
+it parse a real kernel too. Setting `PS5_1160_BOUNDED_BOOT_FILES` on the
+command line is refused. `linux-1160`, `linux-1160-dma-e820`,
+`linux-1160-dma-e820-visible` and `linux-1160-dma-e820-wifi` stay
+byte-identical (`422b87ec`, `2e1758a2`, `681b22ea`, `3cda033e`). The bounded
+hashes are printed, not pinned. Neither bounded build has been booted on
+hardware.
+
 `linux-1160-check` fails unless all of the following hold:
 
 - the exact startup-AP donor hash and size match;

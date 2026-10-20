@@ -2,9 +2,10 @@ name: 11.60 loader
 run-name: 11.60 loader (${{ github.ref_name }})
 
 # Builds the firmware 11.60 loader ELFs on every push and on manual runs:
-# linux-1160 always, and linux-1160-dma-e820, linux-1160-dma-e820-visible and
-# linux-1160-dma-e820-wifi on branches that have them. Each job runs the
-# structural audit that needs no firmware dumps and uploads the ELF with
+# linux-1160 always, and linux-1160-dma-e820, linux-1160-dma-e820-visible,
+# linux-1160-dma-e820-wifi, linux-1160-dma-e820-bounded and
+# linux-1160-dma-e820-bounded-wifi on branches that have them. Each job runs
+# the structural audit that needs no firmware dumps and uploads the ELF with
 # SHA256SUMS and build-info.txt as a workflow artifact.
 #
 # These artifacts are build checks for testers, not releases. The Run 15
@@ -83,6 +84,20 @@ jobs:
             dma_e820: 1
             visible_refusals: 1
             wifi_fw: 1
+          # The visible build with size ranges and boot header checks in place
+          # of the exact Run 15 sizes, with and without the Wi-Fi range. Not
+          # booted, so not pinned.
+          - target: linux-1160-dma-e820-bounded
+            elf: bin/ps5-linux-loader-1160-dma-e820-bounded.elf
+            dma_e820: 1
+            visible_refusals: 1
+            bounded_boot_files: 1
+          - target: linux-1160-dma-e820-bounded-wifi
+            elf: bin/ps5-linux-loader-1160-dma-e820-bounded-wifi.elf
+            dma_e820: 1
+            visible_refusals: 1
+            bounded_boot_files: 1
+            wifi_fw: 1
     env:
       TARGET: ${{ matrix.target }}
       ELF: ${{ matrix.elf }}
@@ -135,7 +150,17 @@ jobs:
           PS5_1160_DMA_E820_SAFE: ${{ matrix.dma_e820 }}
           PS5_1160_VISIBLE_REFUSALS: ${{ matrix.visible_refusals || 0 }}
           PS5_1160_WIFI_FW: ${{ matrix.wifi_fw || 0 }}
+          PS5_1160_BOUNDED_BOOT_FILES: ${{ matrix.bounded_boot_files || 0 }}
         run: python3 tests/audit_1160_port.py
+
+      - name: Boot header unit test
+        if: steps.target.outputs.present == 'true' && matrix.bounded_boot_files == 1
+        run: |
+          set -euo pipefail
+          mkdir -p build/tests
+          cc -std=c11 -Wall -Wextra -Werror tests/test_boot_files_1160.c \
+            -o build/tests/test_boot_files_1160
+          build/tests/test_boot_files_1160
 
       - name: Hash and compare
         if: steps.target.outputs.present == 'true'

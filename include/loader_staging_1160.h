@@ -18,4 +18,11 @@ int stage_linux_aliases_1160(const struct linux_info *info, void *bzimage,
                              size_t bzimage_mapping_size, void *initrd,
                              size_t initrd_mapping_size);
 
+#if PS5_1160_BOUNDED_BOOT_FILES
+#include <stdint.h>
+/* Nonzero when the 16-KiB page at pa overlaps the range the wake blob copies
+ * Linux into.  Valid after stage_linux_aliases_1160 has started. */
+int pa_in_wake_copy_1160(uint64_t pa);
+#endif
+
 #endif

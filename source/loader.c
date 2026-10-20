@@ -154,6 +154,19 @@ int read_file(const char *path, void *buf, size_t bufsize) {
 #define PS5_1160_VISIBLE_REFUSALS 0
 #endif
 
+/* Only the two linux-1160-dma-e820-bounded targets set this.  It replaces the
+ * two exact-size gates with size ranges and boot protocol checks; every other
+ * build keeps the exact Run 15 sizes. */
+#ifndef PS5_1160_BOUNDED_BOOT_FILES
+#define PS5_1160_BOUNDED_BOOT_FILES 0
+#endif
+#if PS5_1160_BOUNDED_BOOT_FILES
+#if !PS5_1160_VISIBLE_REFUSALS
+#error "the bounded 11.60 build must show its refusals"
+#endif
+#include "boot_files_1160.h"
+#endif
+
 static int align_mapping_size_1160(size_t size, size_t *aligned) {
   if (size == 0 || size > SIZE_MAX - (PAGE_SIZE - 1))
     return -1;
@@ -214,6 +227,16 @@ int fetch_linux(struct linux_info *info) {
   size_t bzimage_mapping_size;
 
 #if FW_1160_PORT
+#if PS5_1160_BOUNDED_BOOT_FILES
+  if (bzimage_size < BZ_HEADER_END_1160 ||
+      bzimage_size > MAX_BZIMAGE_SIZE_1160) {
+    notify("11.60 loader refused bzImage: %zu bytes, allowed %u to %llu.\n",
+           bzimage_size, BZ_HEADER_END_1160,
+           (unsigned long long)MAX_BZIMAGE_SIZE_1160);
+    fflush(stdout);
+    return -1;
+  }
+#else
   if (bzimage_size != VALIDATED_BZIMAGE_SIZE_1160) {
 #if PS5_1160_VISIBLE_REFUSALS
     notify("11.60 loader refused bzImage: %zu bytes, needs exactly %llu. "
@@ -227,6 +250,7 @@ int fetch_linux(struct linux_info *info) {
 #endif
     return -1;
   }
+#endif
   if (bzimage_size > MAX_BZIMAGE_SIZE_1160 ||
       align_mapping_size_1160(bzimage_size, &bzimage_mapping_size)) {
     notify("11.60 loader refused invalid bzImage size.\n");
@@ -255,6 +279,25 @@ int fetch_linux(struct linux_info *info) {
   printf("11.60 loader checkpoint: bzImage read complete (%zu bytes)\n",
          bzimage_size);
   fflush(stdout);
+#if PS5_1160_BOUNDED_BOOT_FILES
+  struct bz_layout_1160 bz_layout;
+  int bz_refusal = check_bzimage_1160(bzimage, bzimage_size, &bz_layout);
+  if (bz_refusal != BZ_OK_1160) {
+    notify("11.60 loader refused bzImage: boot header check %d failed. "
+           "See PORTING_1160.md.\n",
+           bz_refusal);
+    fflush(stdout);
+    munmap(bzimage, bzimage_mapping_size);
+    return -1;
+  }
+  printf("11.60 bounded: bzImage protocol 0x%x, setup %u, payload %llu at "
+         "0x100000, decompress 0x%llx-0x%llx\n",
+         bz_layout.version, bz_layout.setup_size,
+         (unsigned long long)bz_layout.payload_size,
+         (unsigned long long)bz_layout.decompress_base,
+         (unsigned long long)bz_layout.decompress_end);
+  fflush(stdout);
+#endif
 #else
   int bytes_read =
       read_file(bzimage_path, bzimage, bzimage_mapping_size);
@@ -277,6 +320,17 @@ int fetch_linux(struct linux_info *info) {
   size_t initrd_mapping_size;
 
 #if FW_1160_PORT
+#if PS5_1160_BOUNDED_BOOT_FILES
+  if (initrd_size < INITRD_MIN_SIZE_1160 ||
+      initrd_size > MAX_INITRD_SIZE_1160) {
+    notify("11.60 loader refused initrd.img: %zu bytes, allowed %u to %llu.\n",
+           initrd_size, INITRD_MIN_SIZE_1160,
+           (unsigned long long)MAX_INITRD_SIZE_1160);
+    fflush(stdout);
+    munmap(bzimage, bzimage_mapping_size);
+    return -1;
+  }
+#else
   if (initrd_size != VALIDATED_INITRD_SIZE_1160) {
 #if PS5_1160_VISIBLE_REFUSALS
     notify("11.60 loader refused initrd.img: %zu bytes, needs exactly %llu. "
@@ -291,12 +345,25 @@ int fetch_linux(struct linux_info *info) {
     munmap(bzimage, bzimage_mapping_size);
     return -1;
   }
+#endif
   if (initrd_size > MAX_INITRD_SIZE_1160 ||
       align_mapping_size_1160(initrd_size, &initrd_mapping_size)) {
     notify("11.60 loader refused invalid initrd size.\n");
     munmap(bzimage, bzimage_mapping_size);
     return -1;
   }
+#if PS5_1160_BOUNDED_BOOT_FILES
+  /* The same cap the staging code applies, refused here where it shows. */
+  if (initrd_mapping_size > MAX_STAGED_BOOT_FILES_1160 - bzimage_mapping_size) {
+    notify("11.60 loader refused boot files: bzImage and initrd.img need %zu "
+           "bytes staged, allowed %llu.\n",
+           bzimage_mapping_size + initrd_mapping_size,
+           (unsigned long long)MAX_STAGED_BOOT_FILES_1160);
+    fflush(stdout);
+    munmap(bzimage, bzimage_mapping_size);
+    return -1;
+  }
+#endif
 #else
   initrd_mapping_size = ALIGN_UP(initrd_size, PAGE_SIZE);
 #endif
@@ -321,6 +388,16 @@ int fetch_linux(struct linux_info *info) {
   printf("11.60 loader checkpoint: initrd read complete (%zu bytes)\n",
          initrd_size);
   fflush(stdout);
+#if PS5_1160_BOUNDED_BOOT_FILES
+  if (check_initrd_1160(initrd, initrd_size)) {
+    notify("11.60 loader refused initrd.img: not a cpio or compressed "
+           "initramfs.\n");
+    fflush(stdout);
+    munmap(initrd, initrd_mapping_size);
+    munmap(bzimage, bzimage_mapping_size);
+    return -1;
+  }
+#endif
 #else
   bytes_read =
       read_file(initrd_path, initrd, initrd_mapping_size);
@@ -364,6 +441,18 @@ int fetch_linux(struct linux_info *info) {
   } else {
     trim_newline(cmdline);
   }
+#if PS5_1160_BOUNDED_BOOT_FILES
+  /* Under the DMA E820 map the only RAM below 1 GiB is 1 to 16 MiB, so KASLR
+   * is what moves the kernel out of the reserved 16 MiB to 1 GiB. */
+  if (strstr(cmdline, "nokaslr") != NULL) {
+    notify("11.60 loader refused cmdline.txt: nokaslr would run Linux inside "
+           "the DMA reservation.\n");
+    fflush(stdout);
+    munmap(initrd, initrd_mapping_size);
+    munmap(bzimage, bzimage_mapping_size);
+    return -1;
+  }
+#endif
 
   info->linux_info = kernel_cave_linux_info;
   info->bzimage = kernel_cave_bzImage;
