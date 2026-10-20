@@ -2,19 +2,21 @@
 
 **ps5-linux** leverages patched HV vulnerabilities to transform your **PS5 Phat and Slim** console running **3.00-7.61 firmwares** into a highly capable Linux PC, unlocking its full hardware potential for desktop use. Powered by 8 CPU cores (16 threads) at **3.5 GHz** and a GPU at **2.23 GHz**, it provides enough performance to run Steam games and various emulators with impressive fluidity.
 
-> **Experimental firmware 11.60 branch:** `firmware-11.60-sonic-display`
-> contains a source-only backport for an exact regular retail PS5 on raw
+> **Experimental firmware 11.60 support on this fork:** `main` contains the
+> source-only backport for an exact regular retail PS5 on raw
 > firmware `0x11600005`. One full Run 15 cycle produced physical HDMI output
 > and authenticated Linux over wired SSH. This is not general upstream 11.60
 > support; PS5 Pro, other 11.xx revisions, repeatability, and multi-monitor
 > coverage are unverified. See [PORTING_1160.md](PORTING_1160.md) for the exact
 > build, evidence boundary, and fail-closed hardware requirements.
 >
-> This `firmware-11.60-dma-e820` branch adds an opt-in build with upstream's
-> 13.60 low-memory DMA reservation. Run 18 booted it once with CachyOS and
+> `main` also contains the opt-in build with upstream's 13.60 low-memory DMA
+> reservation. Run 18 booted it once with CachyOS and
 > Run 19 once with the CI-built Ubuntu 24.04 image from the tester guide
 > (`ubuntu2404-1160-build-3`), both on one CFI-1115B. Its ELF is attached to
-> the `firmware-11.60-dma-e820-run18` release for testers.
+> the `firmware-11.60-dma-e820-run18` release for testers. Run 21 booted the
+> bounded Wi-Fi target once with a local CachyOS 7.3 image; the bounded target
+> without the Wi-Fi dump remains unbooted.
 
 Features:
 
@@ -176,7 +178,7 @@ If none of this helps, please report the issue in our [Discord server](https://d
 
 ### Firmware 11.60 CI builds
 
-On this fork, GitHub Actions builds `make linux-1160` on every push and on manual runs ([loader-1160.yml](.github/workflows/loader-1160.yml)), plus `make linux-1160-dma-e820`, `make linux-1160-dma-e820-visible`, `make linux-1160-dma-e820-wifi`, `make linux-1160-dma-e820-bounded` and `make linux-1160-dma-e820-bounded-wifi` on branches that have those targets. Only the Run 15 and DMA E820 hashes are pinned. Each build uploads its ELF with `SHA256SUMS` and `build-info.txt` as a workflow artifact.
+On this fork, GitHub Actions builds all six 11.60 targets from `main` on every push and on manual runs ([loader-1160.yml](.github/workflows/loader-1160.yml)): `make linux-1160`, `make linux-1160-dma-e820`, `make linux-1160-dma-e820-visible`, `make linux-1160-dma-e820-wifi`, `make linux-1160-dma-e820-bounded` and `make linux-1160-dma-e820-bounded-wifi`. Historical branches that predate a target skip only that missing matrix entry. Only the Run 15 and DMA E820 release hashes are pinned. Each build uploads its ELF with `SHA256SUMS` and `build-info.txt` as a workflow artifact.
 
 These builds are for build checks and testers. They do not replace the release ELFs (Run 15 `422b87ec...`, Run 18 DMA E820 `2e1758a2...`), which were built on macOS with Homebrew LLVM 23.1.0, x86_64-elf-gcc 16.2.0 and binutils 2.47. CI uses whatever Homebrew currently ships, so the file hash will usually differ: clang and lld record their version in `.comment`, and the build ID changes with it. To check the code itself, CI also hashes the ELF with those two sections removed and compares it to the release (`f9002988...` for Run 15, `6737e735...` for Run 18). The run summary shows both hashes. Use the pinned release ELFs for hardware runs.
 

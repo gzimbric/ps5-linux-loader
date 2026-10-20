@@ -1,6 +1,6 @@
 # Firmware 11.60 Sonic-style Linux port
 
-This branch adds a dedicated `linux-1160` build. It preserves the public
+This fork's `main` branch contains a dedicated `linux-1160` build. It preserves the public
 `ps5-linux-loader` flow and substitutes exact 11.60 inputs at the same seam
 used by Sonic's known-working 13.60 ELF:
 
@@ -284,7 +284,7 @@ and, for those two, checks that the fields still match. Setting
 booted the bounded Wi-Fi build once. The bounded build without Wi-Fi has not
 been booted on hardware.
 
-Run 21 used the bounded Wi-Fi ELF built from this branch at `98925a2`
+Run 21 used the bounded Wi-Fi ELF built at commit `98925a2`
 (170,904 bytes,
 `e9fe6469943e97a635eccd3f674e55876b56cd1bbd69023eee3af4acea3a1b5f`). The boot
 files were not the Run 15 pair: an 11,613,184-byte Linux 7.3.0 `bzImage` and a
@@ -296,6 +296,11 @@ dumped the Wi-Fi firmware to `lib/nxp/pcieuartiw620_combo_v1.bin` (498,108
 bytes). This is the first time a loader dumped the IW620 firmware on 11.60,
 and the file on the boot drive has the hash given above. See the hardware
 validation status below.
+
+Current `main` keeps that ELF byte-identical and adds fail-closed mode checks
+for direct file targets plus CI coverage for all six 11.60 variants. The
+historical `firmware-11.60-dma-e820` branch remains only as provenance for the
+Run 18 through Run 21 commits.
 
 `linux-1160-check` fails unless all of the following hold:
 
