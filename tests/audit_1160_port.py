@@ -21,6 +21,7 @@ INNER_HV_ELF = ROOT / "shellcode_hv_port_1160/shellcode_hv_port_1160.elf"
 LOADER = ROOT / "source/loader.c"
 STAGING = ROOT / "source/loader_staging_1160.c"
 HV_DEFEAT = ROOT / "source/hv_defeat_1160.c"
+PREPARE_RESUME = ROOT / "source/prepare_resume.c"
 BOOT_LINUX = ROOT / "shellcode_kernel/boot_linux.c"
 CONFIG = ROOT / "include/config.h"
 WAKE_MAKEFILE = ROOT / "shellcode_kernel_port_1160/Makefile"
@@ -323,6 +324,8 @@ bounded_refusals = (
     b"11.60 loader refused initrd.img: not a cpio or compressed initramfs.",
     b"11.60 loader refused boot files: bzImage and initrd.img need %zu bytes"
     b" staged, allowed %llu.",
+    b"11.60 loader refused cmdline.txt: it has a byte above 0x7f, such as a"
+    b" pasted non-breaking space.",
     b"11.60 loader refused cmdline.txt: nokaslr would run Linux inside",
     b"11.60 loader refused cmdline.txt: mem= and memmap= can undo the DMA"
     b" reservation.",
@@ -331,14 +334,19 @@ bounded_refusals = (
     b"11.60 loader refused staging: %zu source pages would be overwritten by"
     b" the Linux copy, first page %zu at 0x%llx. Run the loader again.",
     b"11.60 loader refused staging: alias table page 0x%llx is inside the"
-    b" Linux copy range.",
+    b" Linux copy range or under the #SX stack page.",
     b"11.60 loader refused staging: %s 0x%llx is inside the Linux copy range."
     b" Reboot before trying again.",
+    b"11.60 loader refused staging: %s 0x%llx is under the #SX stack page.",
+    b"11.60 loader refused staging: #SX stack page 0x%llx or the page under"
+    b" it is inside the Linux copy range.",
+    b"11.60 loader refused staging: boot file page %zu at 0x%llx is under the"
+    b" #SX stack page.",
     b"wake code page",
     b"REFUSED wake copy preflight; no writes attempted",
+    b"11.60 checked Linux alias staging failed. Nothing is armed.\n",
     b"11.60 checked Linux alias staging failed. Nothing is armed, so the"
     b" loader can be run again.",
-    b"11.60 #SX stack page 0x%llx is inside the Linux copy range",
     b"11.60 bounded: bzImage protocol 0x%x",
     b"11.60 bounded: wake copy 0x%llx-0x%llx",
     # What check_bzimage_1160 looks for to see CONFIG_RANDOMIZE_BASE.
@@ -378,7 +386,14 @@ boot_linux_source = BOOT_LINUX.read_text()
 config_source = CONFIG.read_text()
 wake_makefile = WAKE_MAKEFILE.read_text()
 wake_main_source = WAKE_MAIN.read_text()
-assert loader_source.count("stage_linux_aliases_1160(") == 1
+# One staging call per build.  The bounded build keeps the result to tell a
+# refusal that needs a reboot from one that running again can get past.
+assert loader_source.count("stage_linux_aliases_1160(") == 2
+staging_call = loader_source.split(
+    "#if PS5_1160_BOUNDED_BOOT_FILES\n  int staged = stage_linux_aliases_1160(", 1
+)[1].split("#endif", 1)[0]
+assert staging_call.count("#else\n  if (stage_linux_aliases_1160(") == 1
+assert "if (staged == STAGING_REBOOT_FIRST_1160)" in staging_call
 for required in (
     "get_proc_pmap_checked",
     "source_page_pa",
@@ -454,6 +469,10 @@ assert (0x470000000 - 0x11000F000) & ~0xFFFFFF == 0x35F000000
 
 # KASLR has to stay on: nokaslr, mem= and memmap= are refused in the bounded
 # build, before the Wi-Fi firmware is written to the boot drive.
+assert "if (cmdline_has_non_ascii_1160(cmdline)) {" in loader_source
+assert loader_source.index("cmdline_has_non_ascii_1160(cmdline)") < (
+    loader_source.index('strstr(cmdline, "nokaslr")')
+)
 assert 'cmdline_has_option_1160(cmdline, "mem=")' in loader_source
 assert 'cmdline_has_option_1160(cmdline, "memmap=")' in loader_source
 assert loader_source.count("dump_device_firmwares(initrd_path)") == 2
@@ -482,8 +501,33 @@ assert "#define WAKE_CAVE_SIZE_1160 0x5000ULL" in staging_source
 assert "#define KTEXT_1160_END 0xD30000ULL" in hv_defeat_source
 assert "#define CODE_CAVE_CAPACITY (KTEXT_1160_END - 0xD2B000ULL)" in hv_defeat_source
 assert 0xD30000 - 0xD2B000 == 0x5000 == 20480
-assert "pa_in_wake_copy_1160(sx_ist_pa - PAGE_SIZE)" in hv_defeat_source
-assert "if (preflight_wake_copy_1160(&tx, pages, page_count)) {" in staging_source
+# The #SX stack page is taken and checked before the first alias write, so a
+# refusal leaves nothing to roll back; hv_defeat_1160 only uses it.
+assert "pa_in_wake_copy_1160(pa - PAGE_SIZE)" in staging_source
+assert staging_source.count("sx_stack_pa_1160 = pa;") == 1
+assert (
+    "  if (take_sx_stack_page_1160(&tx, pages, page_count) ||\n"
+    "      preflight_wake_copy_1160(&tx, pages, page_count)) {"
+) in staging_source
+assert staging_source.index("take_sx_stack_page_1160(&tx, pages, page_count)") < (
+    staging_source.index('checkpoint("installing checked aliases");')
+)
+for walked in ("pa_to_dmap(pa)", "pa_to_dmap(pa - PAGE_SIZE)"):
+    assert f"walk_wake_mapping_1160(tx->syscore_pml4, {walked}," in staging_source
+assert "result = STAGING_REBOOT_FIRST_1160;" in staging_source
+sx_bounded = hv_defeat_source.split(
+    "#if PS5_1160_BOUNDED_BOOT_FILES\n  /* The wake blob runs on this page", 1
+)[1].split("#else", 1)[0]
+assert "sx_ist = pa_to_dmap(sx_stack_page_1160());" in sx_bounded
+assert "alloc_page" not in sx_bounded
+# Nothing the wake blob reads may sit under the #SX stack page.
+assert "if (pa_in_wake_copy_1160(pa) || pa_under_sx_stack_1160(pa)) {" in (
+    staging_source
+)
+assert "if (pa_under_sx_stack_1160(pages[i].source_pa)) {" in staging_source
+assert "while (pa_under_sx_stack_1160(args_pa))\n    args_pa = alloc_page();" in (
+    PREPARE_RESUME.read_text()
+)
 assert "#error \"the bounded 11.60 build must show its refusals\"" in loader_source
 # Payload menus only show notify().  Every lowercase "refused" message,
 # including the bounded ones, has to go through it.
@@ -492,10 +536,6 @@ for source in (loader_source, staging_source):
         assert source[: match.start()].rstrip().endswith("notify("), (
             source[match.start() : match.start() + 72]
         )
-assert (
-    'notify("11.60 #SX stack page 0x%llx is inside the Linux copy range\\n"'
-    in hv_defeat_source
-)
 assert "#define MAX_STAGED_BOOT_FILES_1160 (160ULL * 1024ULL * 1024ULL)" in boot_files_source
 assert "static_assert(MAX_COMBINED_MAPPING == MAX_STAGED_BOOT_FILES_1160," in staging_source
 assert loader_source.count("check_bzimage_1160(bzimage, bzimage_size, &bz_layout)") == 1

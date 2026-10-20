@@ -264,4 +264,17 @@ static inline int cmdline_has_option_1160(const char *cmdline,
   return 0;
 }
 
+/*
+ * Nonzero when cmdline has a byte above 0x7f.  lib/ctype.c marks 0xa0 (a
+ * non-breaking space, or the second byte of the UTF-8 one) as a space, so the
+ * kernel would start an option after it that cmdline_has_option_1160 misses.
+ * None of the shipped cmdline.txt files use such bytes.
+ */
+static inline int cmdline_has_non_ascii_1160(const char *cmdline) {
+  for (const char *p = cmdline; *p != '\0'; p++)
+    if ((unsigned char)*p > 0x7f)
+      return 1;
+  return 0;
+}
+
 #endif

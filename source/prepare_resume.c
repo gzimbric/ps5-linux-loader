@@ -15,6 +15,9 @@
 #include "iommu.h"
 #include "offsets.h"
 #include "utils.h"
+#if PS5_1160_BOUNDED_BOOT_FILES
+#include "loader_staging_1160.h"
+#endif
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/mman.h>
@@ -413,7 +416,17 @@ uint64_t prepare_sck_args(void) {
   checkpoint_1160_resume("argument preflight passed");
 #endif
 
+#if PS5_1160_BOUNDED_BOOT_FILES
+  /* The wake blob reads its arguments from this page.  Keep them out of the
+   * page under the #SX stack page, which its stack reaches past 0x1040 bytes.
+   * Pages taken here stay allocated, so each try gets a different page. */
+  uint64_t args_pa = alloc_page();
+  while (pa_under_sx_stack_1160(args_pa))
+    args_pa = alloc_page();
+  uint64_t args_cave = pa_to_dmap(args_pa);
+#else
   uint64_t args_cave = pa_to_dmap(alloc_page());
+#endif
   kernel_copyin(&args, args_cave, sizeof(args));
 
   if (fw == PS5_FW_1160) {

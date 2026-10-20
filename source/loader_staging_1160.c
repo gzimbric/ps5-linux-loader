@@ -31,7 +31,7 @@ static_assert(MAX_COMBINED_MAPPING == MAX_STAGED_BOOT_FILES_1160,
  * The exact Run 15 files covered [0x100000000, 0x1040048c0).  Larger files
  * cover more, so refuse anything the blob still needs that the copy would
  * overwrite first: a source page, linux_info, the alias and DMAP page tables,
- * PID 1's PML4 and the kernel code cave the blob runs from.
+ * PID 1's PML4, the kernel code cave the blob runs from and its #SX stack.
  */
 static_assert(cave_bzImage + MAX_COMBINED_MAPPING <= hv_base_rsp - hv_stack_size,
               "staged Linux files would reach the HV stacks");
@@ -43,11 +43,22 @@ static_assert(cave_bzImage + MAX_COMBINED_MAPPING <= cave + 0x40000000ULL,
 #define WAKE_CAVE_SIZE_1160 0x5000ULL
 
 static uint64_t wake_copy_end_1160;
+/* Taken in take_sx_stack_page_1160, before any write. */
+static uint64_t sx_stack_pa_1160;
+/* Set when a refusal is about something that stays put until a reboot. */
+static int refused_until_reboot_1160;
 
 int pa_in_wake_copy_1160(uint64_t pa) {
   return wake_copy_end_1160 != 0 && pa < wake_copy_end_1160 &&
          pa + PAGE_SIZE > cave;
 }
+
+int pa_under_sx_stack_1160(uint64_t pa) {
+  return sx_stack_pa_1160 != 0 && pa < sx_stack_pa_1160 &&
+         pa + PAGE_SIZE > sx_stack_pa_1160 - PAGE_SIZE;
+}
+
+uint64_t sx_stack_page_1160(void) { return sx_stack_pa_1160; }
 
 /*
  * The copy runs forward: linux_info, then bzImage and initrd page by page, so
@@ -326,9 +337,10 @@ static int tx_alloc_table(struct alias_tx_1160 *tx, uint64_t *pa_out) {
     return -1;
   }
 #if PS5_1160_BOUNDED_BOOT_FILES
-  if (pa_in_wake_copy_1160(pa)) {
+  /* This can come after alias writes, which the caller then rolls back. */
+  if (pa_in_wake_copy_1160(pa) || pa_under_sx_stack_1160(pa)) {
     notify("11.60 loader refused staging: alias table page 0x%llx is inside "
-           "the Linux copy range.\n",
+           "the Linux copy range or under the #SX stack page.\n",
            (unsigned long long)pa);
     fflush(stdout);
     munmap(mapping, PAGE_SIZE);
@@ -468,15 +480,26 @@ static void tx_release_backing(struct alias_tx_1160 *tx) {
 }
 
 #if PS5_1160_BOUNDED_BOOT_FILES
-/* These tables and the code cave stay where they are until a reboot. */
+/* Page tables and the code cave stay where they are until a reboot, so a
+ * refusal for the copy range needs one.  The #SX stack page is new on every
+ * run, so a refusal for the page under it does not. */
 static int refuse_in_wake_copy_1160(const char *what, uint64_t pa) {
-  if (!pa_in_wake_copy_1160(pa))
-    return 0;
-  notify("11.60 loader refused staging: %s 0x%llx is inside the Linux copy "
-         "range. Reboot before trying again.\n",
-         what, (unsigned long long)pa);
-  fflush(stdout);
-  return 1;
+  if (pa_in_wake_copy_1160(pa)) {
+    refused_until_reboot_1160 = 1;
+    notify("11.60 loader refused staging: %s 0x%llx is inside the Linux copy "
+           "range. Reboot before trying again.\n",
+           what, (unsigned long long)pa);
+    fflush(stdout);
+    return 1;
+  }
+  if (pa_under_sx_stack_1160(pa)) {
+    notify("11.60 loader refused staging: %s 0x%llx is under the #SX stack "
+           "page.\n",
+           what, (unsigned long long)pa);
+    fflush(stdout);
+    return 1;
+  }
+  return 0;
 }
 
 /* The alias tables that exist already; ensure_child_table reuses them. */
@@ -526,11 +549,68 @@ static int walk_wake_mapping_1160(uint64_t pml4, uint64_t va, uint64_t *pa_out,
 }
 
 /*
+ * The ROP chain leaves rsp at sx_ist + 0x1040, so the wake blob runs on this
+ * page while it copies Linux, and past 0x1040 bytes its stack runs into the
+ * page under it.  Take the page before any write.  Neither page may be in the
+ * copy range, the DMAP tables that map them are walked like the copy's, and
+ * the page under it may not hold a boot file page or linux_info.  The alias
+ * tables (tx_alloc_table), the tables and code cave the blob uses
+ * (refuse_in_wake_copy_1160) and the wake arguments (prepare_sck_args) are
+ * kept out of it too.
+ */
+static int take_sx_stack_page_1160(const struct alias_tx_1160 *tx,
+                                   const struct alias_page_1160 *pages,
+                                   size_t page_count) {
+  void *mapping;
+  uint64_t pa = 0;
+  uint64_t walked = 0;
+  uint64_t next = 0;
+
+  mapping = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
+                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (mapping == MAP_FAILED)
+    return -1;
+  memset(mapping, 0, PAGE_SIZE);
+  if (source_page_pa(tx->source_pml4, mapping, &pa) || pa < PAGE_SIZE) {
+    munmap(mapping, PAGE_SIZE);
+    return -1;
+  }
+  if (pa_in_wake_copy_1160(pa) || pa_in_wake_copy_1160(pa - PAGE_SIZE)) {
+    notify("11.60 loader refused staging: #SX stack page 0x%llx or the page "
+           "under it is inside the Linux copy range.\n",
+           (unsigned long long)pa);
+    fflush(stdout);
+    munmap(mapping, PAGE_SIZE);
+    return -1;
+  }
+  /* Kept mapped from here on; hv_defeat_1160 builds the ROP chain in it. */
+  sx_stack_pa_1160 = pa;
+  for (size_t i = 0; i < page_count; i++) {
+    if (pa_under_sx_stack_1160(pages[i].source_pa)) {
+      notify("11.60 loader refused staging: boot file page %zu at 0x%llx is "
+             "under the #SX stack page.\n",
+             i, (unsigned long long)pages[i].source_pa);
+      fflush(stdout);
+      return -1;
+    }
+  }
+  if (walk_wake_mapping_1160(tx->syscore_pml4, pa_to_dmap(pa), &walked,
+                             &next) ||
+      walked != pa ||
+      walk_wake_mapping_1160(tx->syscore_pml4, pa_to_dmap(pa - PAGE_SIZE),
+                             &walked, &next) ||
+      walked != pa - PAGE_SIZE)
+    return -1;
+  return 0;
+}
+
+/*
  * The wake blob runs on PID 1's page tables from the kernel code cave, reads
  * the boot files through the aliases and writes the copy through DMAP.  New
- * alias tables are checked in tx_alloc_table; this checks PID 1's PML4, the
- * alias tables already present, the DMAP tables for the copy and the code
- * cave with the tables that map it.
+ * alias tables are checked in tx_alloc_table and the #SX stack in
+ * take_sx_stack_page_1160; this checks PID 1's PML4, the alias tables already
+ * present, the DMAP tables for the copy and the code cave with the tables that
+ * map it.
  */
 static int preflight_wake_copy_1160(const struct alias_tx_1160 *tx,
                                     const struct alias_page_1160 *pages,
@@ -696,8 +776,13 @@ int stage_linux_aliases_1160(const struct linux_info *info, void *bzimage,
     }
   }
 #if PS5_1160_BOUNDED_BOOT_FILES
-  if (preflight_wake_copy_1160(&tx, pages, page_count)) {
+  /* The #SX stack page comes first so that the checks after it, and the
+   * alias tables allocated during the install, keep the page under it free. */
+  if (take_sx_stack_page_1160(&tx, pages, page_count) ||
+      preflight_wake_copy_1160(&tx, pages, page_count)) {
     checkpoint("REFUSED wake copy preflight; no writes attempted");
+    if (refused_until_reboot_1160)
+      result = STAGING_REBOOT_FIRST_1160;
     goto out;
   }
   checkpoint("wake copy preflight passed");

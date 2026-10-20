@@ -153,6 +153,8 @@ jobs:
           PS5_1160_BOUNDED_BOOT_FILES: ${{ matrix.bounded_boot_files || 0 }}
         run: python3 tests/audit_1160_port.py
 
+      # Runs on the Run 15 and 7.3 header layouts. The kernels themselves are
+      # not in the repository; PS5_1160_TEST_BZIMAGE covers them locally.
       - name: Boot header unit test
         if: steps.target.outputs.present == 'true' && matrix.bounded_boot_files == 1
         run: |

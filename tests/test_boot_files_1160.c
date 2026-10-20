@@ -15,6 +15,16 @@
 
 static uint8_t *image;
 
+static void set32(uint8_t *buf, size_t off, uint32_t v) {
+  for (int i = 0; i < 4; i++)
+    buf[off + i] = (uint8_t)(v >> (8 * i));
+}
+
+static uint32_t get32(const uint8_t *buf, size_t off) {
+  return (uint32_t)buf[off] | ((uint32_t)buf[off + 1] << 8) |
+         ((uint32_t)buf[off + 2] << 16) | ((uint32_t)buf[off + 3] << 24);
+}
+
 static void put16(size_t off, uint16_t v) {
   image[off] = (uint8_t)v;
   image[off + 1] = (uint8_t)(v >> 8);
@@ -50,12 +60,79 @@ static void run15_header(void) {
 
 static int check(size_t size) { return check_bzimage_1160(image, size, NULL); }
 
+/*
+ * The header fields of the two kernels booted or built so far, and where
+ * kaslr.o's message sits in each file, so CI runs the real-kernel checks on
+ * their layout without the kernels.  PS5_1160_TEST_BZIMAGE runs them on the
+ * files themselves.
+ */
+struct kernel_1160 {
+  const char *name;
+  uint32_t size;
+  uint8_t setup_sects;
+  uint32_t syssize;
+  uint32_t init_size;
+  uint32_t kaslr_at;
+  uint64_t decompress_end;
+};
+
+static const struct kernel_1160 kernels[] = {
+    {"Run 15 7.1.7 layout (11280a8f...)", RUN15_SIZE, RUN15_SETUP_SECTS,
+     RUN15_SYSSIZE, RUN15_INIT_SIZE, 12695416U, 0x3ac9000U},
+    {"CachyOS 7.3 layout (2f7999fe...)", 11617280U, 39U, 724800U, 0x26c5000U,
+     11609736U, 0x36c5000U},
+};
+
 static uint8_t *find(uint8_t *buf, size_t size, const char *text) {
   size_t n = strlen(text);
   for (size_t i = 0; i + n <= size; i++)
     if (memcmp(buf + i, text, n) == 0)
       return buf + i;
   return NULL;
+}
+
+/* A kernel passes, and the same kernel without kaslr.o's message, or with a
+ * setup_data list, is refused.  buf is left as it was. */
+static void check_kernel(const char *name, uint8_t *buf, size_t size,
+                         struct bz_layout_1160 *layout) {
+  uint8_t *message;
+
+  assert(check_bzimage_1160(buf, size, layout) == BZ_OK_1160);
+  printf("%s: protocol 0x%x setup %u payload %llu decompress 0x%llx-0x%llx\n",
+         name, layout->version, layout->setup_size,
+         (unsigned long long)layout->payload_size,
+         (unsigned long long)layout->decompress_base,
+         (unsigned long long)layout->decompress_end);
+
+  message = find(buf, size, BZ_KASLR_MESSAGE_1160);
+  assert(message != NULL);
+  message[0] = 0;
+  assert(check_bzimage_1160(buf, size, NULL) == BZ_KASLR_1160);
+  message[0] = (uint8_t)BZ_KASLR_MESSAGE_1160[0];
+  buf[0x250] = 1;
+  assert(check_bzimage_1160(buf, size, NULL) == BZ_SETUP_DATA_1160);
+  buf[0x250] = 0;
+}
+
+static void check_layout(const struct kernel_1160 *k) {
+  struct bz_layout_1160 layout;
+  uint8_t *buf = calloc(1, k->size);
+
+  assert(buf != NULL);
+  memcpy(buf, image, BZ_HEADER_END_1160);
+  buf[0x1f1] = k->setup_sects;
+  set32(buf, 0x1f4, k->syssize);
+  set32(buf, 0x260, k->init_size);
+  assert(k->kaslr_at + KASLR_LEN <= k->size);
+  memcpy(buf + k->kaslr_at, BZ_KASLR_MESSAGE_1160, KASLR_LEN);
+  check_kernel(k->name, buf, k->size, &layout);
+  assert(layout.setup_size == (k->setup_sects + 1U) * 512U);
+  assert(layout.payload_size == (uint64_t)k->syssize * 16U);
+  assert(layout.decompress_base == 0x1000000);
+  assert(layout.decompress_end == k->decompress_end);
+  /* kaslr.o's message is in the last few KiB of the payload. */
+  assert(layout.payload_size + layout.setup_size - k->kaslr_at < 0x4000);
+  free(buf);
 }
 
 static void check_file(const char *path) {
@@ -73,22 +150,18 @@ static void check_file(const char *path) {
   assert(buf != NULL);
   assert(fread(buf, 1, (size_t)size, f) == (size_t)size);
   fclose(f);
-  assert(check_bzimage_1160(buf, (size_t)size, &layout) == BZ_OK_1160);
-  printf("%s: protocol 0x%x setup %u payload %llu decompress 0x%llx-0x%llx\n",
-         path, layout.version, layout.setup_size,
-         (unsigned long long)layout.payload_size,
-         (unsigned long long)layout.decompress_base,
-         (unsigned long long)layout.decompress_end);
+  check_kernel(path, buf, (size_t)size, &layout);
 
-  /* The same kernel without kaslr.o's message, or with a setup_data list. */
-  {
-    uint8_t *message = find(buf, (size_t)size, BZ_KASLR_MESSAGE_1160);
-    assert(message != NULL);
-    message[0] = 0;
-    assert(check_bzimage_1160(buf, (size_t)size, NULL) == BZ_KASLR_1160);
-    message[0] = (uint8_t)BZ_KASLR_MESSAGE_1160[0];
-    buf[0x250] = 1;
-    assert(check_bzimage_1160(buf, (size_t)size, NULL) == BZ_SETUP_DATA_1160);
+  /* Keep the CI layouts above in step with the real files. */
+  for (size_t i = 0; i < sizeof(kernels) / sizeof(kernels[0]); i++) {
+    const struct kernel_1160 *k = &kernels[i];
+    if (k->size != (size_t)size)
+      continue;
+    assert(buf[0x1f1] == k->setup_sects);
+    assert(get32(buf, 0x1f4) == k->syssize);
+    assert(get32(buf, 0x260) == k->init_size);
+    assert(find(buf, (size_t)size, BZ_KASLR_MESSAGE_1160) == buf + k->kaslr_at);
+    printf("%s matches the %s\n", path, k->name);
   }
   free(buf);
 }
@@ -106,6 +179,8 @@ int main(int argc, char **argv) {
   assert(layout.payload_size == 12682240);
   assert(layout.decompress_base == 0x1000000);
   assert(layout.decompress_end == 0x3ac9000);
+  for (size_t i = 0; i < sizeof(kernels) / sizeof(kernels[0]); i++)
+    check_layout(&kernels[i]);
 
   /* Too short, wrong signatures, old protocol. */
   assert(check(BZ_HEADER_END_1160 - 1) == BZ_SHORT_1160);
@@ -274,6 +349,20 @@ int main(int argc, char **argv) {
       "root=LABEL=__DISTRO__ rw rootwait console=ttyTitania0 console=tty0 "
       "video=DP-1:1920x1080@60 mitigations=off idle=halt preempt=full",
       "mem="));
+
+  /* The kernel splits options at 0xa0, so the option check misses these;
+   * any byte above 0x7f is refused instead. */
+  assert(!cmdline_has_option_1160("quiet\xc2\xa0mem=1G", "mem="));
+  assert(!cmdline_has_option_1160("quiet\xa0memmap=1G$16M", "memmap="));
+  assert(cmdline_has_non_ascii_1160("quiet\xc2\xa0mem=1G"));
+  assert(cmdline_has_non_ascii_1160("quiet\xa0memmap=1G$16M"));
+  assert(cmdline_has_non_ascii_1160("\x80"));
+  assert(cmdline_has_non_ascii_1160("rw \xff"));
+  assert(!cmdline_has_non_ascii_1160(""));
+  assert(!cmdline_has_non_ascii_1160("rw\t\x7f~"));
+  assert(!cmdline_has_non_ascii_1160(
+      "root=LABEL=__DISTRO__ rw rootwait console=ttyTitania0 console=tty0 "
+      "video=DP-1:1920x1080@60 mitigations=off idle=halt preempt=full"));
 
   for (int i = 1; i < argc; i++)
     if (argv[i][0] != '\0')

@@ -23,6 +23,19 @@ int stage_linux_aliases_1160(const struct linux_info *info, void *bzimage,
 /* Nonzero when the 16-KiB page at pa overlaps the range the wake blob copies
  * Linux into.  Valid after stage_linux_aliases_1160 has started. */
 int pa_in_wake_copy_1160(uint64_t pa);
+
+/* stage_linux_aliases_1160 returns this instead of -1 when it refused a page
+ * table or the code cave inside the copy range.  Those stay where they are
+ * until a reboot, so running the loader again in the same boot cannot help. */
+#define STAGING_REBOOT_FIRST_1160 (-2)
+
+/* The #SX stack page that staging took and checked before writing anything,
+ * or 0 if it did not. */
+uint64_t sx_stack_page_1160(void);
+
+/* Nonzero when the 16-KiB page at pa overlaps the page under the #SX stack
+ * page, which the wake blob's stack reaches past 0x1040 bytes. */
+int pa_under_sx_stack_1160(uint64_t pa);
 #endif
 
 #endif

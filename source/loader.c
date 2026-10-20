@@ -459,6 +459,16 @@ int fetch_linux(struct linux_info *info) {
     trim_newline(cmdline);
   }
 #if PS5_1160_BOUNDED_BOOT_FILES
+  /* The kernel reads 0xa0, a non-breaking space, as a space, so an option
+   * after one would get past the checks below. */
+  if (cmdline_has_non_ascii_1160(cmdline)) {
+    notify("11.60 loader refused cmdline.txt: it has a byte above 0x7f, such "
+           "as a pasted non-breaking space.\n");
+    fflush(stdout);
+    munmap(initrd, initrd_mapping_size);
+    munmap(bzimage, bzimage_mapping_size);
+    return -1;
+  }
   /* Under the DMA E820 map the only RAM below 1 GiB is 1 to 16 MiB, so KASLR
    * is what moves the kernel out of the reserved 16 MiB to 1 GiB. */
   if (strstr(cmdline, "nokaslr") != NULL) {
@@ -504,13 +514,19 @@ int fetch_linux(struct linux_info *info) {
    * allocator/walker that was exercised on this exact 11.60 console instead
    * of the upstream unchecked install_page_syscore helper.
    */
+#if PS5_1160_BOUNDED_BOOT_FILES
+  int staged = stage_linux_aliases_1160(info, bzimage, bzimage_mapping_size,
+                                        initrd, initrd_mapping_size);
+  if (staged != 0) {
+    /* Staging returns only with no writes left in place. */
+    if (staged == STAGING_REBOOT_FIRST_1160)
+      notify("11.60 checked Linux alias staging failed. Nothing is armed.\n");
+    else
+      notify("11.60 checked Linux alias staging failed. Nothing is armed, so "
+             "the loader can be run again.\n");
+#else
   if (stage_linux_aliases_1160(info, bzimage, bzimage_mapping_size, initrd,
                                initrd_mapping_size)) {
-#if PS5_1160_BOUNDED_BOOT_FILES
-    /* Staging returns only with no writes left in place. */
-    notify("11.60 checked Linux alias staging failed. Nothing is armed, so "
-           "the loader can be run again.\n");
-#else
     notify("11.60 checked Linux alias staging failed.\n");
 #endif
     munmap(initrd, initrd_mapping_size);

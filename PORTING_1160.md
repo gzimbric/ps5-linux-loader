@@ -210,13 +210,19 @@ wake code take the sizes from `linux_info`. They refuse:
 - a `vram.txt` size that is not a multiple of 16 MiB or is over `0x35f000000`.
   The inner HV puts VRAM right below `0x470000000`, and it has to stay above
   the wake copy and the HV stacks, which end at `0x11000f000`;
-- `nokaslr`, or any `mem=` or `memmap=` option, in `cmdline.txt`;
+- `nokaslr`, any `mem=` or `memmap=` option, or any byte above `0x7f` in
+  `cmdline.txt`. The kernel reads `0xa0`, a non-breaking space, as a space,
+  so an option after one would get past the option check;
 - a `linux_info` page, alias page table (new or already present), PID 1's PML4,
-  DMAP page table for the copy, kernel code cave page or page table that maps
-  it, or the #SX stack page or the page under it, inside
+  DMAP page table for the copy or the #SX stack, kernel code cave page or page
+  table that maps it, or the #SX stack page or the page under it, inside
   `[0x100000000, end of the wake copy)`, which the wake blob overwrites before
   Linux starts. A `bzImage` or `initrd.img` page is refused only if the copy
-  would reach it before reading it, because the blob copies forward.
+  would reach it before reading it, because the blob copies forward;
+- any of those pages or tables in the page under the #SX stack page. The ROP
+  chain leaves the stack 0x1040 bytes into the #SX page, and a deeper stack
+  runs into the page under it. The wake arguments page is not refused there;
+  it is allocated again instead.
 
 KASLR is required with the DMA map: the only RAM it leaves below 1 GiB is 1 to
 16 MiB, so the kernel has to be moved above the reservation. The decompressor
@@ -224,12 +230,19 @@ keeps the kernel at 16 MiB, inside the reservation, whenever it finds no slot:
 with `nokaslr`, a kernel without `CONFIG_RANDOMIZE_BASE`, a `mem=` below about
 1 GiB plus the kernel size, or more than four `memmap=` options. `memmap=` can
 also turn reserved memory back into RAM. Hence those refusals. None of the
-shipped `cmdline.txt` files use `mem=` or `memmap=`.
+shipped `cmdline.txt` files use `mem=` or `memmap=` or bytes above `0x7f`.
+The loader only sees `cmdline.txt`. A command line built into the kernel with
+`CONFIG_CMDLINE` is not visible to it, so a kernel built with `nokaslr`,
+`mem=` or `memmap=` there gets past these checks.
 
 Only `[0x100000000, 0x1040048c0)`, the Run 15 files, has been overwritten on
 hardware. With larger files the copy reaches up to `0x10a009000`. After the
 copy, the wake blob still runs the 29 display calls, `printf` and
-`smp_rendezvous` on GameOS kernel memory that the loader cannot check.
+`smp_rendezvous` on GameOS kernel memory that the loader cannot check. How
+deep the wake blob's stack goes is not measured either. Past 0x1040 bytes it
+writes into the page under the #SX stack page. The checks above keep what the
+blob reads out of that page, but it can hold GameOS kernel memory that the
+loader does not check.
 
 Every refusal is a notification, so payload menus show it. "boot header check
 N failed" means 1 short file, 2 boot flag, 3 `HdrS`, 4 protocol, 5
@@ -237,12 +250,27 @@ N failed" means 1 short file, 2 boot flag, 3 `HdrS`, 4 protocol, 5
 `kernel_alignment`, 10 `pref_address` or a payload over 15 MiB, 11
 `init_size`, 12 `cmdline_size`, 13 no KASLR, 14 `setup_data`. The boot file
 refusals all come before the Wi-Fi build writes the firmware to the boot
-drive. A staging refusal leaves nothing armed. Source pages come from that
-run, so running the loader again can work; page tables and the code cave stay
-where they are until a reboot. The checks also run
-`tests/test_boot_files_1160.c`; `PS5_1160_TEST_BZIMAGE=/path/to/bzImage` makes
-it parse a real kernel too, and check that the same kernel without the KASLR
-message or with a `setup_data` pointer is refused. Setting
+drive.
+
+The copy range and #SX stack checks all run before the first alias write,
+with one exception: a new alias page table is allocated, and checked, while
+the aliases are being installed. A refusal there rolls back the alias writes
+made so far and checks that they are gone; if that check fails, the loader
+holds until a cold reboot. The #SX stack page is taken during staging rather
+than when the wake chain is armed, because any failure after staging holds
+for a cold reboot. A staging refusal leaves nothing armed. Source pages, alias
+tables and the #SX stack page are new on each run, so running the loader again
+can get past those refusals. A page table or the code cave inside the copy
+range stays where it is until a reboot; that refusal says to reboot, and the
+loader does not add that it can be run again.
+
+The checks also run `tests/test_boot_files_1160.c`. It checks that a kernel
+passes, and that the same kernel without the KASLR message or with a
+`setup_data` pointer is refused, on images built from the header fields and
+KASLR message offset of the Run 15 7.1.7 and CachyOS 7.3 bzImages. That is
+what CI runs; the kernels are not in the repository.
+`PS5_1160_TEST_BZIMAGE=/path/to/bzImage` runs the same checks on real files
+and, for those two, checks that the fields still match. Setting
 `PS5_1160_BOUNDED_BOOT_FILES` on the command line is refused. `linux-1160`,
 `linux-1160-dma-e820`, `linux-1160-dma-e820-visible` and
 `linux-1160-dma-e820-wifi` stay byte-identical (`422b87ec`, `2e1758a2`,

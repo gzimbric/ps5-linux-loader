@@ -582,17 +582,10 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
   checkpoint_1160_hv("runtime preflight passed");
 
 #if PS5_1160_BOUNDED_BOOT_FILES
-  /* The wake blob runs on this page while it copies Linux into the cave.  Its
-   * stack starts at sx_ist + 0x1040, where the ROP below ends, and grows
-   * down, so keep the page under it out of the copy range too. */
-  uint64_t sx_ist_pa = alloc_page();
-  if (pa_in_wake_copy_1160(sx_ist_pa) ||
-      pa_in_wake_copy_1160(sx_ist_pa - PAGE_SIZE)) {
-    notify("11.60 #SX stack page 0x%llx is inside the Linux copy range\n",
-           (unsigned long long)sx_ist_pa);
-    return -1;
-  }
-  sx_ist = pa_to_dmap(sx_ist_pa);
+  /* The wake blob runs on this page while it copies Linux into the cave, so
+   * staging took it and checked it, and the page under it, before it wrote
+   * anything.  See take_sx_stack_page_1160. */
+  sx_ist = pa_to_dmap(sx_stack_page_1160());
 #else
   sx_ist = pa_to_dmap(alloc_page());
 #endif
