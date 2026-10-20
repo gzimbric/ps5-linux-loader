@@ -8,14 +8,13 @@ run-name: 11.60 loader (${{ github.ref_name }})
 # the structural audit that needs no firmware dumps and uploads the ELF with
 # SHA256SUMS and build-info.txt as a workflow artifact.
 #
-# These artifacts are build checks for testers, not releases. The Run 15
-# release ELF (422b87ec...) was built on macOS with Homebrew LLVM 23.1.0,
-# x86_64-elf-gcc 16.2.0 and binutils 2.47. This job installs whatever Homebrew
-# ships at the time, so the file hash will usually differ: clang and lld write
-# their version into .comment, and the build ID follows from that. The job
-# also hashes the ELF with .comment and .note.gnu.build-id removed and compares
-# that with the release. A match means the code and data are byte-identical to
-# the release. Hardware runs should still use the pinned release ELF.
+# These artifacts are build checks for testers, not releases. The job installs
+# whatever Homebrew ships at the time, so a file hash can differ when clang or
+# lld writes a different version into .comment and the build ID follows from
+# that. The job also hashes each ELF with .comment and .note.gnu.build-id
+# removed and compares that with the pinned release file. A match means the
+# code and data are byte-identical to the release. Hardware runs should still
+# use the exact release ELF named by the applicable tester guide.
 #
 # linux-1160-check is not run here. Its release audit needs the private 11.60
 # ktext and HV dumps, which must never be uploaded to GitHub. Compiling does
@@ -56,9 +55,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # release_sha256 is the hardware-tested file. code_sha256 is the same
-          # file with .comment and .note.gnu.build-id removed. A target that
-          # the branch's Makefile does not have is skipped.
+          # release_sha256 is the pinned release file. code_sha256 is that file
+          # with .comment and .note.gnu.build-id removed. A target that the
+          # branch's Makefile does not have is skipped. A pin does not imply a
+          # hardware boot; the release notes and tester guide state that status.
           - target: linux-1160
             elf: bin/ps5-linux-loader-1160.elf
             dma_e820: 0
@@ -85,20 +85,27 @@ jobs:
             visible_refusals: 1
             wifi_fw: 1
           # The visible build with size ranges and boot header checks in place
-          # of the exact Run 15 sizes, with and without the Wi-Fi range. The
-          # Wi-Fi variant booted in Run 21; neither has a published pinned
-          # release yet.
+          # of the exact Run 15 sizes, with and without the Wi-Fi range. Both
+          # files are pinned in the public tester prerelease. The Wi-Fi variant
+          # booted in Run 21 with an earlier local image and is recommended for
+          # image 2 testing. The non-Wi-Fi variant is an unbooted A/B build.
           - target: linux-1160-dma-e820-bounded
             elf: bin/ps5-linux-loader-1160-dma-e820-bounded.elf
             dma_e820: 1
             visible_refusals: 1
             bounded_boot_files: 1
+            release: Run 21 bounded tester prerelease (non-Wi-Fi, unbooted)
+            release_sha256: 1c80b040c5a808b3f09418728424a875d5598fe6b2a5d68adeb4db5979a7541a
+            code_sha256: fdabc92c7f7373e2805c66e8614d36703d63e1df67c32b4230bf8f6168651724
           - target: linux-1160-dma-e820-bounded-wifi
             elf: bin/ps5-linux-loader-1160-dma-e820-bounded-wifi.elf
             dma_e820: 1
             visible_refusals: 1
             bounded_boot_files: 1
             wifi_fw: 1
+            release: Run 21 bounded Wi-Fi tester prerelease
+            release_sha256: e9fe6469943e97a635eccd3f674e55876b56cd1bbd69023eee3af4acea3a1b5f
+            code_sha256: 7b4588e3441fb83b3843196c6ebb20fb630dc737cdd7b9e0945dc7a86fdfbace
     env:
       TARGET: ${{ matrix.target }}
       ELF: ${{ matrix.elf }}
@@ -240,7 +247,7 @@ jobs:
             echo "sha256: $file_sha"
             echo "sha256 without .comment and build ID: $code_sha"
             if [ "$file_match" = unpinned ]; then
-              echo "not pinned: no hardware-tested release to compare with"
+              echo "not pinned: no pinned release file to compare with"
             else
               echo "$RELEASE file: $RELEASE_SHA256 ($file_match)"
               echo "$RELEASE code: $CODE_SHA256 ($code_match)"

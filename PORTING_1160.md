@@ -180,6 +180,9 @@ range hashes to
 `eafef24af118f96f84a652e17aeed555ec4ac719b9fac11ff98a2de7e2b4b369` and
 identifies itself as firmware `17.130.3.p47`. The firmware is read from each
 console at boot and is not in this repository or any release.
+The loader release contains no firmware blob. Do not redistribute the runtime
+dump at `lib/nxp/pcieuartiw620_combo_v1.bin`; it came from the individual
+console and is not a release artifact.
 `PS5_1160_WIFI_FW` is passed only to this target's objects, so no other build
 can pick it up. The check prints the hash, which is not pinned. This build has
 not been booted on hardware. The bounded Wi-Fi build below has the same range
@@ -280,9 +283,16 @@ and, for those two, checks that the fields still match. Setting
 `PS5_1160_BOUNDED_BOOT_FILES` on the command line is refused. `linux-1160`,
 `linux-1160-dma-e820`, `linux-1160-dma-e820-visible` and
 `linux-1160-dma-e820-wifi` stay byte-identical (`422b87ec`, `2e1758a2`,
-`681b22ea`, `3cda033e`). The bounded hashes are printed, not pinned. Run 21
-booted the bounded Wi-Fi build once. The bounded build without Wi-Fi has not
-been booted on hardware.
+`681b22ea`, `3cda033e`). The public
+[`firmware-11.60-dma-e820-bounded-run21` tester prerelease](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-dma-e820-bounded-run21)
+pins both bounded files. The bounded ELF is `1c80b040c5a808b3f09418728424a875d5598fe6b2a5d68adeb4db5979a7541a`
+(`fdabc92c7f7373e2805c66e8614d36703d63e1df67c32b4230bf8f6168651724`
+with `.comment` and the build ID removed); it is an unbooted A/B build. The
+recommended bounded Wi-Fi ELF is
+`e9fe6469943e97a635eccd3f674e55876b56cd1bbd69023eee3af4acea3a1b5f`
+(`7b4588e3441fb83b3843196c6ebb20fb630dc737cdd7b9e0945dc7a86fdfbace`
+with those sections removed). Run 21 booted that Wi-Fi build once with an
+earlier local image.
 
 Run 21 used the bounded Wi-Fi ELF built at commit `98925a2`
 (170,904 bytes,
@@ -301,6 +311,13 @@ Current `main` keeps that ELF byte-identical and adds fail-closed mode checks
 for direct file targets plus CI coverage for all six 11.60 variants. The
 historical `firmware-11.60-dma-e820` branch remains only as provenance for the
 Run 18 through Run 21 commits.
+
+The bounded tester prerelease is for exact retail firmware 11.60 only. For
+the public CachyOS image 2 test, use its bounded Wi-Fi ELF and follow the
+[image 2 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-2-tester-guide.md).
+The exact CI-built image 2 has not yet booted on hardware; Run 21 used an
+earlier local image. The non-Wi-Fi bounded ELF remains an A/B comparison, not
+the recommended first test.
 
 `linux-1160-check` fails unless all of the following hold:
 
@@ -449,14 +466,16 @@ not been booted. Run 18 remains the DMA validation run, Run 19 the Ubuntu
 tester-pair run, and Run 15 the release baseline. See the
 [Run 21 evidence](https://github.com/gzimbric/ps5-linux-porting/blob/main/evidence/11.60-cachyos-k73-run-21.md).
 
-The later CachyOS image 2 candidate is independently pinned by tag
-`cachyos1160-k73-image-2` at source commit
+The public
+[CachyOS image 2 tester prerelease](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-2)
+is independently pinned by tag `cachyos1160-k73-image-2` at source commit
 `346088a48f66eb956dafdec9de5085e73b2d44a5`. It still uses rmux's complete
 Linux 7.3 patch set at `36f173f` as the kernel baseline, then applies a
 separate, hash-pinned IW620 Bluetooth follow-up and changes the image's Wi-Fi
 firmware/driver load order. Those image changes do not alter the bounded
 loader contract. Run 21 booted neither tagged CI image, and image 2 remains
-unbooted; a successful image build is not a loader or hardware result.
+unbooted; a successful image build is not a loader or hardware result. Use
+the tester guide linked above for that exact image and loader pair.
 
 ## Hardware test boundary
 

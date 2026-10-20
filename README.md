@@ -15,12 +15,22 @@
 > Run 19 once with the CI-built Ubuntu 24.04 image from the tester guide
 > (`ubuntu2404-1160-build-3`), both on one CFI-1115B. Its ELF is attached to
 > the `firmware-11.60-dma-e820-run18` release for testers. Run 21 booted the
-> bounded Wi-Fi target once with a local CachyOS 7.3 image; the bounded target
-> without the Wi-Fi dump remains unbooted. The later CachyOS image 2 candidate
-> (`cachyos1160-k73-image-2`, source `346088a`) uses rmux's complete pinned
+> bounded Wi-Fi target once with an earlier local CachyOS 7.3 image. The
+> `ps5-linux-loader-1160-dma-e820-bounded-wifi.elf` file is the recommended
+> ELF in the public
+> [bounded-loader tester prerelease](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-dma-e820-bounded-run21);
+> follow the
+> [CachyOS image 2 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-2-tester-guide.md).
+> The bounded target without the Wi-Fi dump is included only for A/B testing
+> and remains unbooted. The later
+> [CachyOS image 2 tester prerelease](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-2)
+> (tag `cachyos1160-k73-image-2`, source `346088a`) uses rmux's complete pinned
 > Linux 7.3 PS5 patch set plus a separate IW620 Bluetooth integration
 > follow-up and a Wi-Fi load-order fix. Neither image 1 nor image 2 was the
-> image used in Run 21, and image 2 has not been booted.
+> image used in Run 21, and the exact CI-built image 2 has not been booted.
+> These tester files are for firmware 11.60 only. The Wi-Fi ELF contains no
+> firmware; it copies the console's own IW620 firmware to the boot drive at
+> runtime. Do not redistribute that dumped firmware file.
 
 The general feature list below does not establish those features on 11.60.
 In Run 21, internal Bluetooth failed; the follow-up kernel fix is still
@@ -187,9 +197,9 @@ If none of this helps, please report the issue in our [Discord server](https://d
 
 ### Firmware 11.60 CI builds
 
-On this fork, GitHub Actions builds all six 11.60 targets from `main` on every push and on manual runs ([loader-1160.yml](.github/workflows/loader-1160.yml)): `make linux-1160`, `make linux-1160-dma-e820`, `make linux-1160-dma-e820-visible`, `make linux-1160-dma-e820-wifi`, `make linux-1160-dma-e820-bounded` and `make linux-1160-dma-e820-bounded-wifi`. Historical branches that predate a target skip only that missing matrix entry. Only the Run 15 and DMA E820 release hashes are pinned. Each build uploads its ELF with `SHA256SUMS` and `build-info.txt` as a workflow artifact.
+On this fork, GitHub Actions builds all six 11.60 targets from `main` on every push and on manual runs ([loader-1160.yml](.github/workflows/loader-1160.yml)): `make linux-1160`, `make linux-1160-dma-e820`, `make linux-1160-dma-e820-visible`, `make linux-1160-dma-e820-wifi`, `make linux-1160-dma-e820-bounded` and `make linux-1160-dma-e820-bounded-wifi`. Historical branches that predate a target skip only that missing matrix entry. The Run 15, Run 18 DMA E820 and both bounded-loader tester-prerelease files are pinned. Each build uploads its ELF with `SHA256SUMS` and `build-info.txt` as a workflow artifact.
 
-These builds are for build checks and testers. They do not replace the release ELFs (Run 15 `422b87ec...`, Run 18 DMA E820 `2e1758a2...`), which were built on macOS with Homebrew LLVM 23.1.0, x86_64-elf-gcc 16.2.0 and binutils 2.47. CI uses whatever Homebrew currently ships, so the file hash will usually differ: clang and lld record their version in `.comment`, and the build ID changes with it. To check the code itself, CI also hashes the ELF with those two sections removed and compares it to the release (`f9002988...` for Run 15, `6737e735...` for Run 18). The run summary shows both hashes. Use the pinned release ELFs for hardware runs.
+These builds are for build checks and testers. They do not replace the release ELFs (Run 15 `422b87ec...`, Run 18 DMA E820 `2e1758a2...`, bounded `1c80b040...`, bounded Wi-Fi `e9fe6469...`). CI uses whatever Homebrew currently ships, so a file hash can differ when clang or lld records a different version in `.comment` and the build ID changes with it. To check the code itself, CI also hashes the ELF with those two sections removed and compares it to the release (`f9002988...` for Run 15, `6737e735...` for Run 18, `fdabc92c...` for bounded and `7b4588e3...` for bounded Wi-Fi). The run summary shows both hashes. Use the exact ELF named by the applicable tester guide for a hardware run; for CachyOS image 2 that is the bounded Wi-Fi release ELF.
 
 CI does not run the `*-check` targets. The release check needs the private 11.60 ktext and HV dumps, and they are never uploaded. CI runs `tests/audit_1160_port.py` without them instead, which covers the structural checks but not the release hash pins.
 
