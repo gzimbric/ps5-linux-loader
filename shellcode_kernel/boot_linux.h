@@ -5,8 +5,6 @@
 
 #define ALIGN_UP(size, align) (((size) + (align) - 1) & ~((align) - 1))
 
-static int dp_enable_link_phy(int lanenum, int linkrate);
-static void install_hv_code(void);
 void boot_linux(void);
 
 extern int (*transmitter_control)(int cmd, void *control);

@@ -766,6 +766,69 @@ offset_list off_0761 = {
     .PS5_WIFI_FW_SIZE = 497636,
 };
 
+/*
+ * Exact retail 11.60 values.  The startup-AP carrier and gadget set are the
+ * hardware-proven Byepervisor 11.60 donor.  ACPIGBL_FACS was ported by
+ * matching both of its 13.60 references against the 11.60 kernel dump.
+ * KERNEL_CODE_CAVE is the five-page NOP tail that has live execution proof.
+ */
+offset_list off_1160 = {
+    .VMSPACE_VM_VMID = 0x1E4,
+    .VMSPACE_VM_PMAP = 0x1D8,
+    .ACPIGBL_FACS = 0x39CD1F0,
+    .IDT = 0x3BA0300,
+    .COMMON_TSS = 0x3BA2FE0,
+    .FUN_MEMCPY = 0x2E7E40,
+    .GAD_ADD_RSP_28_POP_RBP_RET = 0xA57354,
+    .GAD_IRETQ = 0x2AC22D,
+    .GAD_POP_RAX_RET = 0x338D2A,
+    .GAD_POP_RDI_RET = 0x289E0A,
+    .GAD_POP_RSI_RET = 0x8AAFB5,
+    .GAD_POP_RDX_RET = 0x3476DB,
+    .GAD_POP_RCX_RET = 0x339712,
+    .GAD_POP_RSP_RET = 0x33974D,
+    .HOOK_ACPI_WAKEUP_MACHDEP = 0x42FB40,
+    .KERNEL_CODE_CAVE = 0xD2B000,
+    .FUN_PRINTF = 0x535A50,
+    .FUN_SMP_RENDEZVOUS = 0xB739D0,
+    .FUN_SMP_NO_RENDEVOUS_BARRIER = 0x316318,
+    .HV_CODE_CAVE_PA = 0x62806F00,
+    .HV_HANDLE_VMEXIT_PA = 0x62847551,
+    .KERNEL_CFI_CHECK = 0x4EBEB0,
+    /*
+     * Sonic display handoff, ported by structural matching against the
+     * authenticated 11.60 ktext dump.  G_VBIOS is proven by the 0x10000-byte
+     * copy loop at 0xC7FD10; the three functions are the exact 11.60 homologs
+     * of Sonic 13.60's transmitter and MP3 wrappers.
+     */
+    .G_VBIOS = 0x3DB7A40,
+    .FUN_TRANSMITTER_CONTROL = 0xC800C0,
+    .FUN_MP3_INITIALIZE = 0xA88270,
+    .FUN_MP3_INVOKE = 0xA86E70,
+    .HV_MP_STARTUP_CALL = 0xC885D0,
+    .MP_STARTUP_INIT_VECTOR = 0x3110B8,
+    .DATA_CAVE = 0x2D02000,
+    .GAD_PIVOT_ADD_RSP28_RET = 0x2A0EDE,
+    .GAD_STORE_RDI8_RCX_RET = 0x3CC4AF,
+    .GAD_SET_DR7_RET = 0xA7BD86,
+    .GAD_STORE_RCX_RAX_RET = 0x3620BF,
+    .GAD_MOV_RAX_RDI_RET = 0xC5E5DA,
+    .GAD_REP_MOVSB_RET = 0x304367,
+    .GAD_CLD_RET = 0x462C1A,
+    .GAD_RET_TRAMP = 0x338D2B,
+    .GAD_DBREG_RESUME = 0x2A5778,
+    /*
+     * The remaining 13.60 carrier fields are used only by hv_defeat_13xx.
+     * They do not exist in the dedicated 11.60 layout and are zero here in
+     * the general build.
+     */
+};
+
+/*
+ * The dedicated 11.60 builds refuse every other firmware before
+ * set_offsets(), so they do not compile the 13.xx tables at all.
+ */
+#if !(STAGE2A_1160 || FW_1160_PORT)
 offset_list off_1300 = {
     .IOMMU_SOFTC = 0x3532CF0,
     .VMSPACE_VM_VMID = 0x1EC,
@@ -933,3 +996,4 @@ offset_list off_1360 = {
     .NVS_SIGNATURE = 0x1A1A030,
     .HV_EFI_MAP_ROOT = 0x3DF1070,
 };
+#endif

@@ -70,7 +70,6 @@ uint32_t putc_uart(uint64_t dmap, uint8_t tx_byte) {
 }
 
 int puts_uart(uint64_t dmap, const uint8_t *msg) {
-  uint32_t max = 255;
   int ret = 0;
 
   for (int i = 0; i < 255; i++) {
@@ -87,6 +86,9 @@ int puts_uart(uint64_t dmap, const uint8_t *msg) {
 }
 
 void activate_uart(volatile shellcode_kernel_args *args_ptr) {
+  if (args_ptr->kernel_uart_override == 0)
+    return;
+
   uint32_t *uart_va = (uint32_t *)(args_ptr->dmap_base + 0xC0115110ULL);
   *uart_va &= ~0x200;
   uint32_t *override_char_va = (uint32_t *)args_ptr->kernel_uart_override;
@@ -111,13 +113,14 @@ void init_global_pointers(volatile shellcode_kernel_args *args_ptr) {
 }
 
 uint8_t get_cpu(void) {
-  uint32_t eax, ebx, ecx, edx;
+  uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
   __get_cpuid(1, &eax, &ebx, &ecx, &edx);
   uint8_t cpu_id = (ebx >> 24) & 0xFF;
   return cpu_id;
 }
 
-void vmmcall_dummy(void *) {
+void vmmcall_dummy(void *unused) {
+  (void)unused;
   __asm__ volatile("mov $0x1, %rax \n"
                    "vmmcall \n"
                    "ret \n");

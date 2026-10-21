@@ -173,4 +173,14 @@ uint64_t alloc_page(void);
 void pte_store(uintptr_t ptep, uint64_t pte);
 void install_page(uintptr_t pml4, vm_offset_t va, vm_paddr_t pa, int bits);
 void install_page_syscore(vm_offset_t va, vm_paddr_t pa, int bits);
+typedef struct {
+  uintptr_t entry_va[7];
+  uint64_t original[7];
+  size_t count;
+} page_install_transaction;
+
+int install_page_rx_syscore(vm_offset_t va, vm_paddr_t pa, int bits,
+                            page_install_transaction *transaction);
+int rollback_page_syscore(page_install_transaction *transaction);
+int verify_page_rx_syscore(vm_offset_t va, vm_paddr_t pa);
 #endif

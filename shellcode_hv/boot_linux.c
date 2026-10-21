@@ -6,6 +6,13 @@
 
 static struct linux_info info;
 
+#if defined(SHELLCODE_HV_1160)
+/* The 11.60 port refuses a PS5 Pro before staging, so its blob has no Pro map. */
+#define HV_KIT_IS_PRO 0
+#else
+#define HV_KIT_IS_PRO (info.kit_type == KIT_RETAIL_PRO)
+#endif
+
 static volatile int exited_cpus = 0;
 
 static void configure_vram(uint64_t fb_start, uint64_t vram_start,
@@ -57,20 +64,26 @@ static void e820_memory_setup(struct boot_params *bp) {
   append_e820_table(bp, 0x000070000, 0x0000a0000, E820_TYPE_RESERVED);
   append_e820_table(bp, 0x0000a0000, 0x0000c0000, E820_TYPE_RESERVED);
   append_e820_table(bp, 0x0000c0000, 0x000100000, E820_TYPE_RESERVED); // VBIOS
+#if defined(SHELLCODE_HV_1160)
+  /* Run 15 keeps the original low-memory map. */
+  append_e820_table(bp, 0x000100000, 0x03fffc000, E820_TYPE_RAM);
+  append_e820_table(bp, 0x03fffc000, 0x040000000, E820_TYPE_RESERVED);
+#else
   append_e820_table(bp, 0x000100000, 0x001000000, E820_TYPE_RAM);
-  if (info.kit_type == KIT_RETAIL_PRO) {
+  if (HV_KIT_IS_PRO) {
     append_e820_table(bp, 0x001000000, 0x040000000, E820_TYPE_RAM);
   } else {
     append_e820_table(bp, 0x001000000, 0x040000000, E820_TYPE_RESERVED);
   }
-  if (info.kit_type == KIT_RETAIL_PRO) {
+#endif
+  if (HV_KIT_IS_PRO) {
     append_e820_table(bp, 0x040000000, 0x060800000, E820_TYPE_RAM);
   } else {
     append_e820_table(bp, 0x040000000, 0x060000000, E820_TYPE_RAM);
     append_e820_table(bp, 0x060000000, 0x060800000, E820_TYPE_RESERVED); // MP4
   }
   append_e820_table(bp, 0x060800000, 0x060c00000, E820_TYPE_RESERVED); // VCN FW
-  if (info.kit_type == KIT_RETAIL_PRO) {
+  if (HV_KIT_IS_PRO) {
     append_e820_table(bp, 0x060c00000, 0x064000000, E820_TYPE_RAM);
     append_e820_table(bp, 0x064000000, 0x064829000, E820_TYPE_RESERVED); // MP3
   } else {
@@ -92,7 +105,7 @@ static void e820_memory_setup(struct boot_params *bp) {
   append_e820_table(bp, 0x100000000, VRAM_BASE, E820_TYPE_RAM);
   append_e820_table(bp, VRAM_BASE, 0x470000000, E820_TYPE_RESERVED); // VRAM
 
-  if (info.kit_type == KIT_RETAIL_PRO) {
+  if (HV_KIT_IS_PRO) {
     append_e820_table(bp, 0x470000000, 0x47f300000, E820_TYPE_RAM);
     append_e820_table(bp, 0x47f300000, 0x880000000, E820_TYPE_RESERVED);
     append_e820_table(bp, 0x880000000, 0x8e0000000, E820_TYPE_RAM);
@@ -107,6 +120,11 @@ static void e820_memory_setup(struct boot_params *bp) {
     append_e820_table(bp, 0x470000000, 0x87f300000, E820_TYPE_RAM);
     append_e820_table(bp, 0x87f300000, 0x880000000, E820_TYPE_RESERVED);
   }
+
+#if SHELLCODE_HV_1160
+  /* Present in Sonic's proven 13.60 inner HV blob. */
+  append_e820_table(bp, 0x980000000, 0xa00000000, E820_TYPE_RESERVED);
+#endif
 
   for (int i = 0; i < info.n_tmrs; i++) {
     append_e820_table(bp, info.tmrs[i].start, info.tmrs[i].end, E820_TYPE_RESERVED);
@@ -136,9 +154,8 @@ void boot_linux(void) {
   shdr->ramdisk_size = info.initrd_size & 0xffffffff;
   bp->ext_ramdisk_image = info.initrd >> 32;
   bp->ext_ramdisk_size = info.initrd_size >> 32;
-  bp->acpi_rsdp_addr = info.kit_type == KIT_RETAIL_PRO
-                             ? ACPI_RSDP_ADDRESS_PRO
-                             : ACPI_RSDP_ADDRESS;
+  bp->acpi_rsdp_addr =
+      HV_KIT_IS_PRO ? ACPI_RSDP_ADDRESS_PRO : ACPI_RSDP_ADDRESS;
 
   strcpy((char *)cmdline_pa, info.cmdline);
 
@@ -154,6 +171,11 @@ void boot_linux(void) {
 
 void entry(void) {
   disable_intr();
+
+#if SHELLCODE_HV_1160
+  /* Sonic's high-firmware path enables direct UART before leaving SVM. */
+  *(volatile uint32_t *)0xc0115110ULL &= ~0x200U;
+#endif
 
   // Set global interrupt flag.
   __asm__ volatile("stgi\n");

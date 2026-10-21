@@ -1,0 +1,680 @@
+#!/usr/bin/env python3
+"""Fail-closed structural checks for the dedicated 11.60 build."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+import re
+import struct
+import subprocess
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ELF = ROOT / "bin/ps5-linux-loader-1160.elf"
+WAKE = ROOT / "shellcode_kernel_port_1160/shellcode_kernel_port_1160.bin"
+INNER_HV = ROOT / "shellcode_hv_port_1160/shellcode_hv_port_1160.bin"
+AP = ROOT / "shellcode_break_hv/break_hv.bin"
+WAKE_ELF = ROOT / "shellcode_kernel_port_1160/shellcode_kernel_port_1160.elf"
+INNER_HV_ELF = ROOT / "shellcode_hv_port_1160/shellcode_hv_port_1160.elf"
+LOADER = ROOT / "source/loader.c"
+STAGING = ROOT / "source/loader_staging_1160.c"
+HV_DEFEAT = ROOT / "source/hv_defeat_1160.c"
+BOOT_LINUX = ROOT / "shellcode_kernel/boot_linux.c"
+CONFIG = ROOT / "include/config.h"
+WAKE_MAKEFILE = ROOT / "shellcode_kernel_port_1160/Makefile"
+WAKE_MAIN = ROOT / "shellcode_kernel/main.c"
+
+RUN15_ELF_SHA256 = (
+    "422b87ec39ca0edfce8dddd609c2eff1cc7adcb2732b7909b76fafbd60dd2336"
+)
+RUN15_WAKE_SHA256 = (
+    "83756ca9eddffbcf075cb3660ec80755263ce147793922a54414b57c15d11319"
+)
+RUN15_WAKE_ELF_SHA256 = (
+    "19c9e7fc396520bad8e49f8f4c97ffe10830d494a2fe9346d6d944ff6f09ac3a"
+)
+
+diag_mode_text = os.environ.get("PS5_1160_DIAGNOSTIC")
+assert diag_mode_text in (None, "0", "1")
+diagnostic_build = diag_mode_text == "1"
+release_check_text = os.environ.get("PS5_1160_RELEASE_CHECK")
+assert release_check_text in (None, "0", "1")
+release_check = release_check_text == "1"
+if diagnostic_build:
+    diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE", "5")
+    diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT", "29")
+    diag_clear_text = os.environ.get("PS5_1160_DIAG_CLEAR_MP3_BUFFERS", "0")
+    diag_pre_stage = int(diag_pre_text, 0)
+    diag_op_limit = int(diag_op_text, 0)
+    diag_clear_mp3_buffers = int(diag_clear_text, 0)
+    assert 0 <= diag_pre_stage <= 5
+    assert 0 <= diag_op_limit <= 29
+    assert diag_clear_mp3_buffers in (0, 1)
+
+
+def u32(value: int) -> bytes:
+    return value.to_bytes(4, "little")
+
+
+def u64(value: int) -> bytes:
+    return value.to_bytes(8, "little")
+
+
+def tool_output(tool: str, *args: object) -> str:
+    return subprocess.check_output(
+        [tool, *(str(arg) for arg in args)], text=True
+    )
+
+
+def elf_symbol_bytes(path: Path, symbol: str) -> bytes:
+    """Return one file-backed ELF symbol without relying on byte uniqueness."""
+    symbols = tool_output("x86_64-elf-nm", "-anS", path)
+    match = re.search(
+        rf"^([0-9a-f]+)\s+([0-9a-f]+)\s+\S\s+{re.escape(symbol)}$",
+        symbols,
+        re.MULTILINE,
+    )
+    assert match, symbol
+    address = int(match.group(1), 16)
+    size = int(match.group(2), 16)
+
+    sections = tool_output("x86_64-elf-readelf", "-SW", path)
+    for row in sections.splitlines():
+        section = re.search(
+            r"\[\s*\d+\]\s+\S+\s+(\S+)\s+([0-9a-f]+)\s+"
+            r"([0-9a-f]+)\s+([0-9a-f]+)\s+",
+            row,
+        )
+        if not section or section.group(1) == "NOBITS":
+            continue
+        section_address = int(section.group(2), 16)
+        section_offset = int(section.group(3), 16)
+        section_size = int(section.group(4), 16)
+        if section_address <= address and address + size <= section_address + section_size:
+            start = section_offset + address - section_address
+            return path.read_bytes()[start : start + size]
+    raise AssertionError(f"file-backed section for {symbol} not found")
+
+
+def assert_raw_blob_is_pic(path: Path, raw_path: Path) -> None:
+    """A copied raw section must not depend on its ELF link address."""
+    header = tool_output("x86_64-elf-readelf", "-h", path)
+    assert re.search(r"Type:\s+DYN\b", header), path
+
+    relocations = tool_output("x86_64-elf-readelf", "-rW", path)
+    assert "There are no relocations in this file." in relocations, path
+
+    sections = tool_output("x86_64-elf-readelf", "-SW", path)
+    match = re.search(
+        r"\]\s+\.shell_code\s+PROGBITS\s+([0-9a-f]+)\s+([0-9a-f]+)\s+"
+        r"([0-9a-f]+)\s+",
+        sections,
+    )
+    assert match, path
+    start = int(match.group(1), 16)
+    file_offset = int(match.group(2), 16)
+    size = int(match.group(3), 16)
+    end = start + size
+
+    elf_bytes = path.read_bytes()
+    assert raw_path.read_bytes() == elf_bytes[file_offset : file_offset + size], (
+        path,
+        raw_path,
+    )
+    assert not re.search(r"\s\.(?:got|got\.plt|plt|plt\.got)\s", sections), path
+
+    dynamic = tool_output("x86_64-elf-readelf", "-dW", path)
+    assert "(NEEDED)" not in dynamic, path
+    assert tool_output("x86_64-elf-nm", "-u", path).strip() == "", path
+
+    symbols = tool_output("x86_64-elf-nm", "-n", path)
+    main = re.search(r"^([0-9a-f]+)\s+T\s+main$", symbols, re.MULTILINE)
+    assert main and int(main.group(1), 16) == start, path
+
+    # Catch the exact regression that originally left raw linked VMAs such as
+    # `mov rbx,0x2c60` in a blob later copied somewhere else.  The one
+    # legitimate in-range scalar is the exact firmware number used by the wake
+    # validator.  Every symbolized PC-relative target must remain inside the
+    # section that objcopy extracts.
+    disassembly = tool_output("x86_64-elf-objdump", "-d", "-Mintel", path)
+    bad = []
+    for line in disassembly.splitlines():
+        instruction = line.split("#", 1)[0]
+        immediate = re.search(
+            r"\bmov(?:abs)?\s+[^,]+,0x([0-9a-f]+)\b", instruction
+        )
+        absolute_memory = re.search(r"\[(?:ds:)?0x([0-9a-f]+)\]", instruction)
+        for candidate in (immediate, absolute_memory):
+            if candidate:
+                value = int(candidate.group(1), 16)
+                if start <= value < end and value != 0x1160:
+                    bad.append(line.strip())
+
+        for target in re.finditer(r"(?:#\s*)?([0-9a-f]+)\s+<[^>]+>", line):
+            value = int(target.group(1), 16)
+            if not (start <= value < end):
+                bad.append(line.strip())
+    assert not bad, f"absolute linked VMA in {path}: {bad}"
+
+
+elf = ELF.read_bytes()
+wake = WAKE.read_bytes()
+inner_hv = INNER_HV.read_bytes()
+ap = AP.read_bytes()
+
+if release_check:
+    assert diagnostic_build, "release check requires PS5_1160_DIAGNOSTIC=1"
+    assert (diag_pre_stage, diag_op_limit, diag_clear_mp3_buffers) == (5, 29, 0), (
+        "release check requires the hardware-tested Run 15 gates",
+        diag_pre_stage,
+        diag_op_limit,
+        diag_clear_mp3_buffers,
+    )
+    assert hashlib.sha256(elf).hexdigest() == RUN15_ELF_SHA256
+    assert hashlib.sha256(wake).hexdigest() == RUN15_WAKE_SHA256
+    assert hashlib.sha256(WAKE_ELF.read_bytes()).hexdigest() == RUN15_WAKE_ELF_SHA256
+
+assert_raw_blob_is_pic(WAKE_ELF, WAKE)
+assert_raw_blob_is_pic(INNER_HV_ELF, INNER_HV)
+
+assert 0 < len(wake) <= 0x5000
+assert 0 < len(inner_hv) <= 0x2000
+assert wake.count(bytes.fromhex("aa11aa11aa11aa11")) == 1
+assert wake.count(inner_hv) == 1
+assert elf.count(wake) == 1
+assert elf.count(ap) == 1
+assert hashlib.sha256(ap).hexdigest() == (
+    "918ac3d8ccc16ec31e40fc069cf5ba46b168afd493acb12461adc8f96c7ee997"
+)
+
+# Validate the fields in the actual off_1160 object. Whole-ELF byte counts are
+# brittle because an immediate or embedded blob can legitimately contain the
+# same eight bytes.
+off_1160 = elf_symbol_bytes(ELF, "off_1160")
+assert len(off_1160) == 51 * 8
+for field_index, value in {
+    4: 0x39CD1F0,   # ACPIGBL_FACS
+    11: 0x2E7E40,   # FUN_MEMCPY
+    12: 0xA57354,   # final #GP/#SX: add rsp,0x28; pop rbp; ret
+    23: 0xD2B000,   # KERNEL_CODE_CAVE
+    29: 0x62806F00,  # Sonic's executable identity-mapped HV cave
+    30: 0x62847551,  # HV_HANDLE_VMEXIT_PA
+    33: 0x3DB7A40,  # G_VBIOS, resolved by 0x10000-byte copy-loop xref
+    34: 0xC800C0,   # transmitter_control
+    35: 0xA88270,   # mp3_initialize wrapper
+    36: 0xA86E70,   # mp3_invoke
+    39: 0xC885D0,   # HV_MP_STARTUP_CALL
+    41: 0x2D02000,  # DATA_CAVE (startup-AP resume carrier)
+    42: 0x2A0EDE,   # startup #DB: add rsp,0x28; rep ret
+}.items():
+    assert off_1160[field_index * 8 : field_index * 8 + 8] == u64(value), hex(value)
+assert u64(0x6284AC20) not in off_1160
+assert off_1160[12 * 8 : 13 * 8] != off_1160[42 * 8 : 43 * 8]
+
+# Sonic's complete post-stage HDMI sequence, translated entry-for-entry to
+# authenticated 11.60 homologs.  Preserve the original 0x18-byte record ABI,
+# order, EDI values, and the one two-argument call.
+display_records = (
+    (0x00362730, 0, 0, 0),
+    (0x00362980, 0, 0, 0),
+    (0x00362AD0, 0, 0, 0),
+    (0x00362C90, 0, 0, 0),
+    (0x00C16F70, 0, 0, 0),
+    (0x00333410, 0, 0, 0),
+    (0x00751F20, 0, 0, 0),
+    (0x00B01800, 0, 0, 0),
+    (0x005381C0, 0, 0, 0),
+    (0x005383B0, 0, 0, 0),
+    (0x00362AA0, 0, 0, 0),
+    (0x00B88B80, 0, 0, 0),
+    (0x00B896F0, 0, 0, 0),
+    (0x00B89900, 0, 0, 0),
+    (0x00B89A40, 0, 0, 0),
+    (0x00334460, 0, 0, 0),
+    (0x00334460, 1, 0, 0),
+    (0x00334460, 2, 0, 0),
+    (0x00334460, 3, 0, 0),
+    (0x00362CC0, 0, 0, 0),
+    (0x00538580, 0, 0, 0),
+    (0x00538700, 0, 0, 0),
+    (0x00B88C70, 0, 0, 0),
+    (0x007585F0, 0, 0, 0),
+    (0x009DC910, 1, 2, 0x7F0),
+    (0x0053D9F0, 0, 0, 0),
+    (0x00539460, 1, 0, 0),
+    (0x00538ED0, 0, 0, 0),
+    (0x00538D70, 0, 0, 0),
+)
+expected_display_table = b"".join(
+    struct.pack("<QIIQ", offset, arg1, mode, arg2)
+    for offset, arg1, mode, arg2 in display_records
+)
+display_table = elf_symbol_bytes(WAKE_ELF, "ps5_display_ops_1160")
+assert len(display_table) == 29 * 0x18
+assert display_table == expected_display_table
+if diagnostic_build:
+    assert elf_symbol_bytes(WAKE_ELF, "ps5_diag_pre_stage_1160") == struct.pack(
+        "<I", diag_pre_stage
+    )
+    assert elf_symbol_bytes(
+        WAKE_ELF, "ps5_diag_display_op_limit_1160"
+    ) == struct.pack("<I", diag_op_limit)
+    assert elf_symbol_bytes(
+        WAKE_ELF, "ps5_diag_clear_mp3_buffers_1160"
+    ) == struct.pack("<I", diag_clear_mp3_buffers)
+
+# Do not accidentally ship the corresponding 13.60 offsets.
+for value in (0x39C9490, 0x2590B0, 0xCB92C0):
+    assert u32(value) not in elf, hex(value)
+
+assert elf.count(u32(0x11600005)) >= 2
+assert elf.count(u32(0x840FD0)) >= 2
+assert b"PS5 Pro HV layout is not validated" in elf
+
+# The dedicated build must use the live-tested Stage-1A/1B checked alias
+# transaction rather than entering the upstream unchecked helper from
+# fetch_linux.  Keep every checkpoint in the final ELF so a headless run can
+# identify the precise boundary reached.
+for marker in (
+    b"11.60 loader REFUSED bzImage size",
+    b"11.60 loader REFUSED initrd size",
+    b"selective CFI/wake-cave text permissions complete",
+    b"failed; retaining all backing until cold reboot",
+    b"building checked source plan",
+    b"11.60 alias staging: source preflight passed",
+    b"target range preflight passed",
+    b"installing checked aliases",
+    b"all aliases installed",
+    b"verifying alias PTEs",
+    b"PASS; source, info, and page-table backing retained",
+    b"install/verify failed; rolling back",
+    b"rollback verified",
+):
+    assert marker in elf, marker
+
+loader_source = LOADER.read_text()
+staging_source = STAGING.read_text()
+hv_defeat_source = HV_DEFEAT.read_text()
+boot_linux_source = BOOT_LINUX.read_text()
+config_source = CONFIG.read_text()
+wake_makefile = WAKE_MAKEFILE.read_text()
+wake_main_source = WAKE_MAIN.read_text()
+assert loader_source.count("stage_linux_aliases_1160(") == 1
+for required in (
+    "get_proc_pmap_checked",
+    "source_page_pa",
+    "preflight_target_page",
+    "tx_install_page",
+    "verify_aliases",
+    "tx_rollback",
+    "verify_targets_absent",
+    "retained_staging.active = 1",
+    "writes_started = 0",
+):
+    assert required in staging_source, required
+assert "mlock(" not in staging_source
+assert "VALIDATED_BZIMAGE_SIZE_1160 12702720ULL" in loader_source
+assert "VALIDATED_INITRD_SIZE_1160 54376639ULL" in loader_source
+
+# The display-enabled build mirrors Sonic's pre-Linux handoff and must never
+# silently regress to the run-7 headless compile.  Its two large MP3 buffers
+# live in the checked, retained tail of the linux_info page so the exact
+# hardware-proven 0x5000 executable cave is not moved.
+assert "SHELLCODE_1160_HEADLESS" not in wake_makefile
+assert "PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 0" in wake_makefile
+assert "-DPS5_1160_DIAG_CLEAR_MP3_BUFFERS=" in wake_makefile
+
+# Match the static Sonic layout exactly inside the retained 0x4000-byte page:
+# rsp[1282] at +0x1000, an 0x18-byte gap, then req[1281] at +0x2420.
+mp3_rsp_offset = 0x1000
+mp3_rsp_size = 1282 * 4
+mp3_req_offset = 0x2420
+mp3_req_size = 1281 * 4
+assert 0xC38 <= mp3_rsp_offset
+assert mp3_rsp_offset + mp3_rsp_size == 0x2408
+assert mp3_rsp_offset + mp3_rsp_size + 0x18 == mp3_req_offset
+assert mp3_req_offset + mp3_req_size == 0x3824
+assert mp3_req_offset + mp3_req_size <= 0x4000
+for required in (
+    "memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000)",
+    "dp_enable_link_phy(4, 30)",
+    "wait_for_transmitter()",
+    "read_tsc() - start <= 349999999ULL",
+    "mp3_initialize(0)",
+    "mp3_set_hdcp_packet(0, 1)",
+    "mp3_enable_output(0, 1)",
+    "MP3_RSP_OFFSET 0x1000ULL",
+    "MP3_REQ_OFFSET 0x2420ULL",
+    "MP3_RSP_WORDS * sizeof(int) + 0x18ULL ==",
+    "Sonic MP3 buffers must remain 32-byte aligned",
+    "args.linux_info_va + MP3_REQ_OFFSET",
+    "args.linux_info_va + MP3_RSP_OFFSET",
+):
+    assert required in boot_linux_source, required
+assert "#if !SHELLCODE_1160_ONLY\n    clear_mp3_buffers();\n#endif" in boot_linux_source
+assert u32(349999999) in wake
+display_order = (
+    "boot_linux();",
+    "run_ps5_display_ops_1160();",
+    'printf("Linux prepared OK\\n");',
+    "smp_rendezvous(",
+)
+only_1160_main = wake_main_source.split("#if SHELLCODE_1160_ONLY", 2)[2].split(
+    "#else", 1
+)[0]
+cursor = 0
+for step in display_order:
+    cursor = only_1160_main.index(step, cursor) + len(step)
+offsets_present_source = hv_defeat_source.split(
+    "static int offsets_present", 1
+)[1].split("static int walk_page", 1)[0]
+for display_offset in (
+    "env_offset.G_VBIOS",
+    "env_offset.FUN_TRANSMITTER_CONTROL",
+    "env_offset.FUN_MP3_INITIALIZE",
+    "env_offset.FUN_MP3_INVOKE",
+):
+    assert display_offset in offsets_present_source, display_offset
+
+# Sonic uses two semantically different stack pivots.  #DB has no error code,
+# whereas #GP/#SX have one extra qword that the pop-rbp pivot must consume.
+assert "gate_encode(kg(env_offset.GAD_PIVOT_ADD_RSP28_RET)" in hv_defeat_source
+assert hv_defeat_source.count(
+    "setidt(13, kg(env_offset.GAD_ADD_RSP_28_POP_RBP_RET), 7);"
+) == 1
+assert hv_defeat_source.count(
+    "setidt(30, kg(env_offset.GAD_ADD_RSP_28_POP_RBP_RET), 7);"
+) == 1
+assert "setidt(13, kg(env_offset.GAD_PIVOT_ADD_RSP28_RET)" not in hv_defeat_source
+assert "setidt(30, kg(env_offset.GAD_PIVOT_ADD_RSP28_RET)" not in hv_defeat_source
+for gate_field in (
+    "gate.gd_selector = GSEL(GCODE_SEL, SEL_KPL);",
+    "gate.gd_type = SDT_SYSIGT;",
+    "gate.gd_dpl = SEL_KPL;",
+    "gate.gd_p = 1;",
+):
+    assert hv_defeat_source.count(gate_field) == 1, gate_field
+assert hv_defeat_source.count(
+    "kwrite64(kg(env_offset.COMMON_TSS) + TSS_IST(7), sx_ist + 0x1000);"
+) == 1
+assert hv_defeat_source.count(
+    "kwrite64(kg(env_offset.ACPIGBL_FACS), kg(env_offset.ACPIGBL_FACS) - 8);"
+) == 1
+
+sx_rop_source = hv_defeat_source.split("static int build_sx_rop", 1)[1].split(
+    "static void setidt", 1
+)[0]
+rop_steps = (
+    "*p++ = kg(env_offset.GAD_POP_RDI_RET);",
+    "*p++ = kg(env_offset.KERNEL_CODE_CAVE);",
+    "*p++ = kg(env_offset.GAD_POP_RSI_RET);",
+    "*p++ = kernel_cave_shellcode;",
+    "*p++ = kg(env_offset.GAD_POP_RDX_RET);",
+    "*p++ = shellcode_len;",
+    "*p++ = kg(env_offset.FUN_MEMCPY);",
+    "*p++ = kg(env_offset.KERNEL_CODE_CAVE);",
+)
+cursor = 0
+for step in rop_steps:
+    cursor = sx_rop_source.index(step, cursor) + len(step)
+
+
+def pivot_distance_from_chain(frame_qwords: int, pops_after_add: int) -> int:
+    return -(frame_qwords * 8) + 0x28 + (pops_after_add * 8)
+
+
+assert pivot_distance_from_chain(5, 0) == 0  # #DB/no-pop reaches the chain.
+assert pivot_distance_from_chain(6, 1) == 0  # #GP/#SX/pop reaches the chain.
+assert pivot_distance_from_chain(6, 0) == -8  # The run-6 mismatch did not.
+
+# Keep the proven absolute-jump/identity-map sequence and ensure its 25-byte
+# transition stub fits entirely in the verified 0x100-byte HV padding window.
+assert "mov rax, 0xAAAAAAAA" in boot_linux_source
+assert "mov    cr3, rax" in boot_linux_source
+assert "sizeof(shellcode_jmp) == 9" in boot_linux_source
+assert "sizeof(shellcode_identity_and_jmp) == 25" in boot_linux_source
+assert (0x62806F00 & 0xFFF) == 0xF00
+assert 0x62806F00 + 25 <= 0x62807000
+for identity_entry in (
+    "0x0000000000000083",
+    "0x0000000040000083",
+    "0x0000000080000083",
+    "0x00000000C0000083",
+    "0x0000000100000083",
+):
+    assert boot_linux_source.count(identity_entry) == 1, identity_entry
+assert "#define cave 0x100000000ULL" in config_source
+assert "cave_hv_paging + 0x3000ULL" in config_source
+
+wake_disassembly = tool_output("x86_64-elf-objdump", "-d", "-Mintel", WAKE_ELF)
+boot_linux_disassembly = re.search(
+    r"<boot_linux>:\n(.*?)(?=\n[0-9a-f]+ <[^>]+>:)",
+    wake_disassembly,
+    re.DOTALL,
+)
+assert boot_linux_disassembly
+boot_linux_body = boot_linux_disassembly.group(1)
+
+
+def instruction_position(body: str, pattern: str, start: int = 0) -> int:
+    match = re.search(pattern, body[start:])
+    assert match, pattern
+    return start + match.start()
+
+
+if diagnostic_build:
+    # PRE0 must branch around every display pre-stage while retaining the
+    # exact PRE1..PRE5 sequence for later no-UART hardware bisection.
+    pre_cursor = instruction_position(
+        boot_linux_body, r"<ps5_diag_pre_stage_1160>"
+    )
+    for gate in (
+        r"\btest\s+ebx,ebx",
+        r"<g_vbios>",
+        r"\bcmp\s+ebx,0x1",
+        r"<transmitter_control>",
+        r"\bcmp\s+ebx,0x2",
+        r"<mp3_initialize>",
+        r"<mp3_invoke>",
+        r"<ps5_diag_clear_mp3_buffers_1160>",
+        r"\bcmp\s+ebx,0x3",
+        r"\bmov\s+edi,0x15",
+        r"<mp3_invoke>",
+        r"\bcmp\s+ebx,0x4",
+        r"\bmov\s+edi,0x16",
+        r"<mp3_invoke>",
+    ):
+        pre_cursor = instruction_position(boot_linux_body, gate, pre_cursor + 1)
+
+    # The independently auditable clear flag must branch directly to the
+    # zero-argument MP3 initializer, skipping only the two buffer-clear loops.
+    clear_bypass = re.search(
+        r"<ps5_diag_clear_mp3_buffers_1160>.*?"
+        r"\bje\s+([0-9a-f]+)\s+<boot_linux\+.*?\n"
+        r".*?^\s*([0-9a-f]+):[^\n]*\bxor\s+edi,edi\n"
+        r"^\s*[0-9a-f]+:[^\n]*\bcall\s+rsi\b",
+        boot_linux_body,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert clear_bypass
+    assert clear_bypass.group(1) == clear_bypass.group(2)
+
+display_loop = re.search(
+    r"<run_ps5_display_ops_1160>:\n(.*?)(?=\n[0-9a-f]+ <[^>]+>:)",
+    wake_disassembly,
+    re.DOTALL,
+)
+assert display_loop
+display_loop_body = display_loop.group(1)
+display_leaf = re.search(
+    r"<dispatch_ps5_display_op_1160(?:\.[^>]*)?>:\n"
+    r"(.*?)(?=\n[0-9a-f]+ <[^>]+>:)",
+    wake_disassembly,
+    re.DOTALL,
+)
+assert display_leaf
+display_leaf_body = display_leaf.group(1)
+leaf_bound = instruction_position(display_leaf_body, r"\bcmp\s+edi,0x1c")
+leaf_arg1 = instruction_position(
+    display_leaf_body, r"\bmov\s+edi,DWORD PTR \[[^\]]+\+0x8\]"
+)
+leaf_mode = instruction_position(
+    display_leaf_body, r"\bcmp\s+DWORD PTR \[[^\]]+\+0xc\],0x2"
+)
+leaf_arg2 = instruction_position(
+    display_leaf_body, r"\bmov\s+rsi,QWORD PTR \[[^\]]+\+0x10\]"
+)
+assert leaf_bound < leaf_arg1 < leaf_mode < leaf_arg2
+assert not re.search(r"\b(?:push|call)\b|\bsub\s+rsp,", display_leaf_body)
+assert not re.search(r"\bcall\b", display_leaf_body)
+assert len(re.findall(r"\bjmp\s+(?:QWORD PTR \[[^\]]+\]|r[a-z0-9]+)\b", display_leaf_body)) == 2
+leaf_call_pattern = (
+    r"\bcall\s+[0-9a-f]+\s+"
+    r"<dispatch_ps5_display_op_1160(?:\.[^>]*)?>"
+)
+assert len(re.findall(leaf_call_pattern, display_loop_body)) == 1
+if diagnostic_build:
+    limit_compare = instruction_position(
+        display_loop_body,
+        r"\bcmp\s+[a-z0-9]+,DWORD PTR \[[^\]]+\].*"
+        r"<ps5_diag_display_op_limit_1160>",
+    )
+    conditional_exit = instruction_position(
+        display_loop_body,
+        r"\bjae\s+[0-9a-f]+\s+<run_ps5_display_ops_1160\+",
+        limit_compare + 1,
+    )
+    leaf_call = instruction_position(
+        display_loop_body, leaf_call_pattern
+    )
+    assert limit_compare < conditional_exit < leaf_call
+else:
+    assert re.search(r"\bcmp\s+[a-z0-9]+,0x1d", display_loop_body)
+patch_hv_disassembly = re.search(
+    r"<patch_hv>:\n(.*?)(?=\n[0-9a-f]+ <boot_linux>:)",
+    wake_disassembly,
+    re.DOTALL,
+)
+assert patch_hv_disassembly
+patch_hv_body = patch_hv_disassembly.group(1)
+assert re.search(r"\bmov\s+edx,0x9\b", patch_hv_body)
+assert re.search(r"\bmov\s+edx,0x19\b", patch_hv_body)
+assert len(re.findall(r"call\s+.*<memcpy>", patch_hv_body)) == 2
+
+# When the local live dumps are supplied, tie the portable structural audit to
+# the exact 11.60 bytes used for this release candidate.
+ktext_dump_path = os.environ.get("PS5_1160_KTEXT_DUMP")
+if release_check:
+    assert ktext_dump_path, "release check requires PS5_1160_KTEXT_DUMP"
+if ktext_dump_path:
+    ktext_dump = Path(ktext_dump_path).read_bytes()
+    assert len(ktext_dump) == 0xD30000
+    assert hashlib.sha256(ktext_dump).hexdigest() == (
+        "0e3439b5b4d249010fede6ad31d8969e01ad56824d3f80554545745a8f7260d5"
+    )
+    assert ktext_dump[0xA57354 : 0xA5735A] == bytes.fromhex("4883c4285dc3")
+    assert ktext_dump[0x2A0EDE : 0x2A0EE4] == bytes.fromhex("4883c428f3c3")
+
+    # Authenticated display handoff offsets.  The VBIOS storage itself lies in
+    # kdata, outside this text dump, so resolve it from the exact RIP-relative
+    # reference in the 0x10000-byte VBIOS copy loop.
+    vbios_copy = ktext_dump[0xC7FD10 : 0xC7FD42]
+    assert vbios_copy.startswith(
+        bytes.fromhex("554889e5415741564155415453504889fb4885ff741c488d0d")
+    )
+    assert bytes.fromhex("483d0000010075ee") in vbios_copy
+    vbios_disp = int.from_bytes(ktext_dump[0xC7FD29 : 0xC7FD2D], "little", signed=True)
+    assert 0xC7FD2D + vbios_disp == 0x3DB7A40
+    assert ktext_dump[0xC800C0 : 0xC800DF].startswith(
+        bytes.fromhex("554889e54156534189fe488d3d")
+    )
+    assert ktext_dump[0xA88270 : 0xA8827D] == bytes.fromhex(
+        "554889e5535089febf50052105"
+    )
+    assert ktext_dump[0xA86E70 : 0xA86E85] == bytes.fromhex(
+        "554889e54157415641554154534881ec480a000048"
+    )
+
+    # Freeze every unique native 11.60 HDMI-operation target to the same
+    # authenticated dump used for the structural 13.60 -> 11.60 match.
+    display_target_hashes = (
+        (0x00362730, 0x24E, "3ec783c9b6b9b6133fae1fc0e7084154116e950bc0c0f67fb81f9b451b16c08f"),
+        (0x00362980, 0x11A, "0c7eedf44d576716f88a4b99b0622cc8c4f5d1fd2277792613879a5c28ab770d"),
+        (0x00362AD0, 0x158, "3ea96f6dd479ce0a4568e744864616b3da20af7e80f82f3dbe8fe5abacdac1ef"),
+        (0x00362C90, 0x00C, "1794941374d37a7da6e3cfcf3bd6273cf554566475c8b448d66d7df64e640345"),
+        (0x00C16F70, 0x010, "b7055a771b73e246892e6b770dd938c40c858b735e811617e77b2ab240c6a8c6"),
+        (0x00333410, 0x010, "cbf4a75b1b5d477967f04eb7094bb9cd3db1bceb2a5a92b525c1e73eaab3f9ce"),
+        (0x00751F20, 0x01E, "d20c572479055595e6d7e88373a9ec26f59f9c299e73f3317f6a76c95b887781"),
+        (0x00B01800, 0x010, "5f24b7557edf5d173d2895c1da631d8de196335c3ae576383c011445fafda02d"),
+        (0x005381C0, 0x1E3, "6bd98a138bfd654620729b3315153c4e0ca1b73b8cc12d5bb631a0fc39a29c99"),
+        (0x005383B0, 0x1C1, "96288b7e10cdca59ac0cd96331a773dc9600f69f9d1537a3e816ca671d8f4d56"),
+        (0x00362AA0, 0x00C, "b223afb164de3fddf4711b9f44ef3dbceeafd70019befa2d42ce916f6ce54631"),
+        (0x00B88B80, 0x0E2, "24dd2b2fbec6db2710cfb741174345850aed575ecebde752c6d4485d42caeff0"),
+        (0x00B896F0, 0x208, "5f79968a1468d733203346db45d5c0d1d1a4fcdb4c2c9cea6f245062795512bb"),
+        (0x00B89900, 0x13F, "99232d2ac711f35dc1d2bc8053bfa74ed602cb0b590eb8a5f9570dfd5459f6ce"),
+        (0x00B89A40, 0x123, "0b52ba99a030398b2e3ca09df77e9fddba4f7da50f1ea3354d81c3b2b68c68b8"),
+        (0x00334460, 0x186, "9ec5255b3a25c6235cd2cbe61481e240c0c1e72ea855ba72a87940001ec5f273"),
+        (0x00362CC0, 0x018, "45aac6842559173af08ad49da38e5638b6b9d424d8a2d9be9b58266d7eefa3d9"),
+        (0x00538580, 0x17B, "8800618803f998e0fadd4c5c96a6eb2d19898593c84dc35a4339ee3f0ba7a6af"),
+        (0x00538700, 0x164, "2d3b0fa96fbc8b9994f77dc276eaf4dde84dfb2273f559759bfc7e30c0811792"),
+        (0x00B88C70, 0x13D, "3f87fa35742af07c2f1d64c34a698b6ec593fc9dc0cd3026ddfffd548635f003"),
+        (0x007585F0, 0x00C, "e0a7d5ece47661d1ed1afd64d4e58d0acdcba91da5936822974fc43cbac7709a"),
+        (0x009DC910, 0x0F2, "54fe8672776dd2c6c7710fff1f712bdbd61467c1867ffb79cab68a1cc57dc0f1"),
+        (0x0053D9F0, 0x8C4, "c60f615906e87b8919e8533d1c77615d1586ccb61ce5a6c22de30833a482f051"),
+        (0x00539460, 0x254D, "cc48bc84fd46ba6e9a3c7e80219d0341c51644f9612a4848250ac36ed3119727"),
+        (0x00538ED0, 0x15B, "f70526de9c0fdc85bd227d46e0a529a3d6d8ced0327988496e2b5938d96d19e6"),
+        (0x00538D70, 0x159, "186fa44933eb03ffb74fba976b0877d3f3004c3033e17b7ed4db84fbea978e2c"),
+    )
+    assert {offset for offset, _, _ in display_target_hashes} == {
+        offset for offset, _, _, _ in display_records
+    }
+    for offset, size, expected_hash in display_target_hashes:
+        assert hashlib.sha256(ktext_dump[offset : offset + size]).hexdigest() == expected_hash
+
+    # Operation 26 has a long, firmware-specific cold tail.  Also pin the
+    # structurally matched entry prefix through the last instruction before
+    # its packet-selection branch so identity remains independently visible.
+    assert hashlib.sha256(ktext_dump[0x539460 : 0x539512]).hexdigest() == (
+        "6ccf76c082d8918d94905b81ec61ac295299b6265e2cdaaebc7ae68fe31a808a"
+    )
+
+hv_dump_path = os.environ.get("PS5_1160_HV_DUMP")
+if release_check:
+    assert hv_dump_path, "release check requires PS5_1160_HV_DUMP"
+if hv_dump_path:
+    hv_dump = Path(hv_dump_path).read_bytes()
+    assert len(hv_dump) == 0x62000
+    assert hashlib.sha256(hv_dump).hexdigest() == (
+        "ada1624ce72ef2fe4e9400e13d544116be4050f5187234a1fa19c6bd26988fee"
+    )
+    assert hv_dump[0x6F00 : 0x7000] == b"\xcc" * 0x100
+
+# Firmware 11.60 XOM remains NPT-enforced until the startup-AP strike.  A live
+# ktext content read before that strike hard-freezes the console even after the
+# guest XO bit is cleared.  Preserve Sonic's ordering: metadata/PTE validation
+# now, copy into the cave only after NPT is disabled during resume.
+assert "page-table-only wake-cave validation passed" in hv_defeat_source
+validate_wake_cave_source = hv_defeat_source.split(
+    "static int validate_wake_cave", 1
+)[1].split("static uint64_t tss_ist_slot", 1)[0]
+for forbidden_read in ("kread(", "kread64(", "kernel_copyout(", "pa_to_dmap("):
+    assert forbidden_read not in validate_wake_cave_source, forbidden_read
+
+# Sonic's two high-firmware inner-HV deltas: reserved E820 start and direct
+# UART enable.  Check operand constants rather than compiler register choice.
+assert u64(0x980000000) in inner_hv
+assert u32(0xC0115110) in inner_hv
+assert u32(0xFFFFFDFF) in inner_hv
+
+diag_label = (
+    f" diag-pre={diag_pre_stage} diag-ops={diag_op_limit} "
+    f"diag-clear-mp3={diag_clear_mp3_buffers}"
+    if diagnostic_build
+    else ""
+)
+print(
+    f"11.60 audit OK:{diag_label} elf={len(elf)} wake={len(wake)} "
+    f"inner_hv={len(inner_hv)} ap={len(ap)}"
+)

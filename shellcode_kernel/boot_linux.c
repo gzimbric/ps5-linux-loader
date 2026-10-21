@@ -1,7 +1,13 @@
 #include "boot_linux.h"
 #include "../include/config.h"
 #include "../include/linux.h"
+#if SHELLCODE_1160_ONLY
+#include "../shellcode_hv_port_1160/shellcode_hv_port_1160.h"
+#define shellcode_hv_bin shellcode_hv_port_1160_bin
+#define shellcode_hv_bin_len shellcode_hv_port_1160_bin_len
+#else
 #include "../shellcode_hv/shellcode_hv.h"
+#endif
 #include "utils.h"
 
 #define DIG1TRANSMITTERCONTROL 0x4c
@@ -42,6 +48,7 @@ typedef struct {
   uint32_t lane_setting_2;
 } transmitter_args;
 
+#if !SHELLCODE_1160_HEADLESS
 struct dig_transmitter_control_parameters_v1_6 {
   uint8_t phyid;
   uint8_t action;
@@ -57,27 +64,86 @@ struct dig_transmitter_control_parameters_v1_6 {
   uint8_t reserved;
   uint32_t reserved1;
 };
+#endif
 
 static struct linux_info info;
 
-#if defined(FW_13XX_PORT)
-static int *mp3_req, *mp3_rsp;
+#if !SHELLCODE_1160_HEADLESS
+#if SHELLCODE_1160_DIAGNOSTIC
+#ifndef PS5_1160_DIAG_PRE_STAGE
+#define PS5_1160_DIAG_PRE_STAGE 5
+#endif
+#ifndef PS5_1160_DIAG_CLEAR_MP3_BUFFERS
+#define PS5_1160_DIAG_CLEAR_MP3_BUFFERS 0
+#endif
+_Static_assert(PS5_1160_DIAG_PRE_STAGE >= 0 &&
+                   PS5_1160_DIAG_PRE_STAGE <= 5,
+               "11.60 diagnostic pre-display stage is out of range");
+_Static_assert(PS5_1160_DIAG_CLEAR_MP3_BUFFERS == 0 ||
+                   PS5_1160_DIAG_CLEAR_MP3_BUFFERS == 1,
+               "11.60 diagnostic MP3 clear gate must be 0 or 1");
+volatile const uint32_t ps5_diag_pre_stage_1160 =
+    PS5_1160_DIAG_PRE_STAGE;
+volatile const uint32_t ps5_diag_clear_mp3_buffers_1160 =
+    PS5_1160_DIAG_CLEAR_MP3_BUFFERS;
+#endif
+
+#define MP3_REQ_WORDS 1281ULL
+#define MP3_RSP_WORDS 1282ULL
+#if SHELLCODE_1160_ONLY || defined(FW_13XX_PORT)
+#define MP3_RSP_OFFSET 0x1000ULL
+#define MP3_REQ_OFFSET 0x2420ULL
+
+/*
+ * Sonic keeps these two MP3 IPC buffers in the wake blob's zero-filled data.
+ * The authenticated 11.60 executable cave is 0x5000 bytes, and embedding the
+ * same 0x280c bytes would make the otherwise identical display-enabled blob
+ * 792 bytes too large.  The checked linux_info alias owns one complete 0x4000
+ * page; linux_info occupies 0xc38 bytes, leaving a disjoint, retained tail for
+ * the exact same buffers without moving the proven cave.  Preserve Sonic's
+ * observed layout: the 0x1408-byte response buffer first, an 0x18-byte gap,
+ * then the 0x1404-byte request buffer.  The 13.00/13.20 port uses the same
+ * offsets.
+ */
+_Static_assert(sizeof(struct linux_info) <= MP3_RSP_OFFSET,
+               "linux_info overlaps MP3 response buffer");
+_Static_assert((MP3_REQ_OFFSET & 31) == 0 && (MP3_RSP_OFFSET & 31) == 0,
+               "Sonic MP3 buffers must remain 32-byte aligned");
+_Static_assert(MP3_RSP_OFFSET + MP3_RSP_WORDS * sizeof(int) + 0x18ULL ==
+                   MP3_REQ_OFFSET,
+               "Sonic MP3 response/request gap changed");
+_Static_assert(MP3_REQ_OFFSET + MP3_REQ_WORDS * sizeof(int) <= PAGE_SIZE,
+               "MP3 buffers exceed the retained linux_info page");
+
+static int *mp3_req_buffer(void) {
+  return (int *)(args.linux_info_va + MP3_REQ_OFFSET);
+}
+
+static int *mp3_rsp_buffer(void) {
+  return (int *)(args.linux_info_va + MP3_RSP_OFFSET);
+}
 #else
-static int mp3_req[1281], mp3_rsp[1282];
+static int mp3_req[MP3_REQ_WORDS], mp3_rsp[MP3_RSP_WORDS];
+
+static int *mp3_req_buffer(void) { return mp3_req; }
+
+static int *mp3_rsp_buffer(void) { return mp3_rsp; }
+#endif
+
+static void clear_mp3_buffers(void) {
+  int *req = mp3_req_buffer();
+  int *rsp = mp3_rsp_buffer();
+
+  for (uint64_t i = 0; i < MP3_REQ_WORDS; i++)
+    req[i] = 0;
+  for (uint64_t i = 0; i < MP3_RSP_WORDS; i++)
+    rsp[i] = 0;
+}
 #endif
 
 static inline void stac(void) { __asm__ volatile("stac" : : : "cc"); }
 
 static inline void clac(void) { __asm__ volatile("clac" : : : "cc"); }
-
-#if defined(FW_13XX_PORT)
-static uint64_t read_tsc(void) {
-  uint32_t lo, hi;
-  __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-  return ((uint64_t)hi << 32) | lo;
-}
-
-#endif
 
 static inline uint64_t vmmcall(uint64_t nr, uint64_t a0, uint64_t a1,
                                uint64_t a2) {
@@ -89,6 +155,7 @@ static inline uint64_t vmmcall(uint64_t nr, uint64_t a0, uint64_t a1,
   return ret;
 }
 
+#if !SHELLCODE_1160_HEADLESS
 static uint64_t get_hv_shm(void) {
   if (args.fw_version >= 0x0500 && args.fw_version < 0x0600) {
     return 0x62a01000;
@@ -112,17 +179,35 @@ static int dp_enable_link_phy(int lanenum, int linkrate) {
   return transmitter_control(DIG1TRANSMITTERCONTROL, &params);
 }
 
+static uint64_t read_tsc(void) {
+  uint32_t lo;
+  uint32_t hi;
+  __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  return ((uint64_t)hi << 32) | lo;
+}
+
+static void wait_for_transmitter(void) {
+  const uint64_t start = read_tsc();
+
+  /* Sonic's 13.60 wake blob waits through TSC delta 349,999,999. */
+  while (read_tsc() - start <= 349999999ULL)
+    __asm__ volatile("pause");
+}
+
 static int mp3_set_hdcp_packet(int be, int mode) {
-  mp3_req[0] = be;
-  mp3_req[1] = mode;
-  return mp3_invoke(21, mp3_req, mp3_rsp);
+  int *req = mp3_req_buffer();
+  req[0] = be;
+  req[1] = mode;
+  return mp3_invoke(21, req, mp3_rsp_buffer());
 }
 
 static int mp3_enable_output(int be, int mode) {
-  mp3_req[0] = be;
-  mp3_req[1] = mode;
-  return mp3_invoke(22, mp3_req, mp3_rsp);
+  int *req = mp3_req_buffer();
+  req[0] = be;
+  req[1] = mode;
+  return mp3_invoke(22, req, mp3_rsp_buffer());
 }
+#endif
 
 static void install_hv_code(void) {
   // Install identity map for HV
@@ -144,12 +229,14 @@ static void install_hv_code(void) {
     *(uint64_t *)PHYS_TO_DMAP(l40_l3_addr + i * 8) = identity_pml40_l3[i];
   }
 
+#if !SHELLCODE_1160_ONLY
   // Keep the HV trampoline mapped after switching CR3.
   uint64_t cave_index = args.hv_code_cave_pa >> 30;
   if (cave_index >= l3_size) {
     *(uint64_t *)PHYS_TO_DMAP(l40_l3_addr + cave_index * 8) =
         (cave_index << 30) | 0x83;
   }
+#endif
 
   // Install shellcode_hv
   memcpy((void *)PHYS_TO_DMAP(cave_hv_code), shellcode_hv_bin,
@@ -157,28 +244,31 @@ static void install_hv_code(void) {
 }
 
 void patch_hv(void) {
+  // Jump to shellcode final identity mapping
+  uint8_t shellcode_jmp[] = {0x48, 0xC7, 0xC0, 0xAA,
+                             0xAA, 0xAA, 0xAA, // mov rax, 0xAAAAAAAA
+                             0xFF, 0xE0};      // jmp rax
+  _Static_assert(sizeof(shellcode_jmp) == 9,
+                 "VMEXIT absolute-jump patch size changed");
+
+  // Update code cave in hv 1:1 region
+  *(uint32_t *)(&shellcode_jmp[3]) = (uint32_t)args.hv_code_cave_pa;
+
+#if !SHELLCODE_1160_ONLY
   if (args.hv_code_cave_pa > 0x7fffffffULL) {
     // Pro HV code cave is above 4GB, needs 64-bit movabs.
-    uint8_t shellcode_jmp[] = {0x48, 0xB8, 0xAA, 0xAA, 0xAA,
-                               0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // movabs rax, imm64
-                               0xFF, 0xE0};                    // jmp rax
+    uint8_t shellcode_jmp64[] = {0x48, 0xB8, 0xAA, 0xAA, 0xAA,
+                                 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // movabs rax, imm64
+                                 0xFF, 0xE0};                    // jmp rax
 
-    *(uint64_t *)(&shellcode_jmp[2]) = args.hv_code_cave_pa;
-    memcpy((void *)PHYS_TO_DMAP(args.hv_handle_vmexit_pa), shellcode_jmp,
-           sizeof(shellcode_jmp));
-  } else {
-    // Jump to shellcode final identity mapping
-    uint8_t shellcode_jmp[] = {0x48, 0xC7, 0xC0, 0xAA,
-                               0xAA, 0xAA, 0xAA, // mov rax, 0xAAAAAAAA
-                               0xFF, 0xE0};      // jmp rax
-
-    // Update code cave in hv 1:1 region
-    *(uint32_t *)(&shellcode_jmp[3]) = (uint32_t)args.hv_code_cave_pa;
-
-    // Just patch the VMEXIT handler directly, avoiding all checks
-    memcpy((void *)PHYS_TO_DMAP(args.hv_handle_vmexit_pa), shellcode_jmp,
-           sizeof(shellcode_jmp));
-  }
+    *(uint64_t *)(&shellcode_jmp64[2]) = args.hv_code_cave_pa;
+    memcpy((void *)PHYS_TO_DMAP(args.hv_handle_vmexit_pa), shellcode_jmp64,
+           sizeof(shellcode_jmp64));
+  } else
+#endif
+  // Just patch the VMEXIT handler directly, avoiding all checks
+  memcpy((void *)PHYS_TO_DMAP(args.hv_handle_vmexit_pa), shellcode_jmp,
+         sizeof(shellcode_jmp));
 
   uint8_t shellcode_identity_and_jmp[] = {
       0x48, 0xB8, 0xAA, 0xAA, 0xAA,
@@ -188,6 +278,8 @@ void patch_hv(void) {
       0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // movabs rax, 0xAAAAAAAAAAAAAAAA
       0xFF, 0xE0                    // jmp    rax
   };
+  _Static_assert(sizeof(shellcode_identity_and_jmp) == 25,
+                 "HV identity transition stub size changed");
 
   // Update CR3 PA (from config)
   *(uint64_t *)(&shellcode_identity_and_jmp[2]) = cave_hv_paging;
@@ -200,37 +292,60 @@ void patch_hv(void) {
 }
 
 void boot_linux(void) {
-#if defined(FW_13XX_PORT)
-  mp3_rsp = (int *)(args.linux_info_va + 0x1000);
-  mp3_req = (int *)(args.linux_info_va + 0x2420);
-#endif
-
   patch_hv();
 
   // Common bootloader code
   install_hv_code();
 
-  memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000);
+#if !SHELLCODE_1160_HEADLESS
+#if SHELLCODE_1160_DIAGNOSTIC
+  const uint32_t diag_pre_stage = ps5_diag_pre_stage_1160;
+
+  if (diag_pre_stage >= 1 && g_vbios != 0)
+    memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000);
+
+  if (diag_pre_stage >= 2 && transmitter_control != NULL) {
+    dp_enable_link_phy(4, 30);
+    wait_for_transmitter();
+  }
+
+  if (diag_pre_stage >= 3 && mp3_initialize != NULL && mp3_invoke != NULL) {
+    if (ps5_diag_clear_mp3_buffers_1160 != 0)
+      clear_mp3_buffers();
+    mp3_initialize(0);
+    if (diag_pre_stage >= 4)
+      mp3_set_hdcp_packet(0, 1);
+    if (diag_pre_stage >= 5)
+      mp3_enable_output(0, 1);
+  }
+#else
+  if (g_vbios != 0)
+    memcpy((void *)PHYS_TO_DMAP(0xC0000), (void *)g_vbios, 0x10000);
 
   // Enable DP phys link.
-  dp_enable_link_phy(4, 30);
-
-#if defined(FW_13XX_PORT)
-  uint64_t start = read_tsc();
-  while (read_tsc() - start < 0x14DC937FULL)
-    __asm__ volatile("pause");
-#endif
+  if (transmitter_control != NULL) {
+    dp_enable_link_phy(4, 30);
+    wait_for_transmitter();
+  }
 
   // Initialize hdcp in mp3.
-  mp3_initialize(0);
-  mp3_set_hdcp_packet(0, 1);
-  mp3_enable_output(0, 1);
+  if (mp3_initialize != NULL && mp3_invoke != NULL) {
+#if !SHELLCODE_1160_ONLY
+    clear_mp3_buffers();
+#endif
+    mp3_initialize(0);
+    mp3_set_hdcp_packet(0, 1);
+    mp3_enable_output(0, 1);
+  }
+#endif
+#endif
 
   // Copy bzImage and initrd into contiguous memory.
   memcpy(&info, (void *)args.linux_info_va, sizeof(struct linux_info));
 
 #if !defined(FW_13XX_PORT)
   info.n_tmrs = 0;
+#if !SHELLCODE_1160_HEADLESS
   if (args.fw_version >= 0x0500 && args.fw_version < 0x0800) {
     SceSblHvShm *shm = (SceSblHvShm *)PHYS_TO_DMAP(get_hv_shm());
 
@@ -243,6 +358,7 @@ void boot_linux(void) {
       }
     }
   }
+#endif
 #else
   info.n_tmrs = 0;
 #endif
