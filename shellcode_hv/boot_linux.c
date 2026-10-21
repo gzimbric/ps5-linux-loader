@@ -64,7 +64,7 @@ static void e820_memory_setup(struct boot_params *bp) {
   append_e820_table(bp, 0x000070000, 0x0000a0000, E820_TYPE_RESERVED);
   append_e820_table(bp, 0x0000a0000, 0x0000c0000, E820_TYPE_RESERVED);
   append_e820_table(bp, 0x0000c0000, 0x000100000, E820_TYPE_RESERVED); // VBIOS
-#if defined(SHELLCODE_HV_1160)
+#if defined(SHELLCODE_HV_1160) && !PS5_1160_DMA_E820_SAFE
   /* Run 15 keeps the original low-memory map. */
   append_e820_table(bp, 0x000100000, 0x03fffc000, E820_TYPE_RAM);
   append_e820_table(bp, 0x03fffc000, 0x040000000, E820_TYPE_RESERVED);
