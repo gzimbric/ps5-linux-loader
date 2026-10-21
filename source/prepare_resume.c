@@ -179,7 +179,7 @@ int remove_xotext(void) {
     /*
      * The broad all-.text walk was the last operation observed before an
      * earlier 11.60 crash.  The hardware-tested 11.60 path only opens the two
-     * mappings that this Sonic-style handoff must write: the CFI handler byte
+     * mappings that this high-firmware handoff must write: the CFI handler byte
      * patched by the wake shellcode and the executable cave populated by the
      * resume ROP.  Executing the remaining XOM text does not require making it
      * readable or writable.

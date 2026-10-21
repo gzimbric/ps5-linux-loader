@@ -28,7 +28,7 @@ int main(void) {
   assert(sizeof(candidate) == 0x98);
   assert(validate_shellcode_kernel_args_1160(&candidate) == 0);
 
-  /* Retail UART remains optional; Sonic's display handoff does not. */
+  /* Retail UART remains optional; the display handoff does not. */
   assert(candidate.kernel_uart_override == 0);
 
   candidate.fw_version = 0x1360;

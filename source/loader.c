@@ -510,7 +510,7 @@ int fetch_linux(struct linux_info *info) {
 
 #if FW_1160_PORT
   /*
-   * Keep Sonic's pre-suspend PID-1 aliases, but use the checked Stage-1A/1B
+   * Keep the 13.60 pre-suspend PID-1 aliases, but use the checked Stage-1A/1B
    * allocator/walker that was exercised on this exact 11.60 console instead
    * of the upstream unchecked install_page_syscore helper.
    */

@@ -4,18 +4,18 @@
 #include <stddef.h>
 
 /*
- * Sonic's wake blob runs this ordered table after the VBIOS/DP/MP3 handoff
- * and Linux staging, but before the final SMP rendezvous.  Every target below
- * is the authenticated 11.60 structural homolog of Sonic's 13.60 target; no
- * 13.60 address is executed on the console.
+ * The 13.60 reference wake blob runs this ordered table after the
+ * VBIOS/DP/MP3 handoff and Linux staging, but before the final SMP
+ * rendezvous.  Every target below is the authenticated 11.60 structural
+ * homolog of its 13.60 target; no 13.60 address is executed on the console.
  *
- * The record ABI deliberately matches Sonic's 0x18-byte table.  The original
- * dispatcher always loads EDI from arg1_edi, even when mode is zero.  Mode 2
- * additionally loads RSI from arg2_rsi.  Preserve that behavior: entries
- * 15--18 and 26 rely on non-default EDI values.
+ * The record ABI deliberately matches the 13.60 0x18-byte table.  The
+ * original dispatcher always loads EDI from arg1_edi, even when mode is
+ * zero.  Mode 2 additionally loads RSI from arg2_rsi.  Preserve that
+ * behavior: entries 15--18 and 26 rely on non-default EDI values.
  */
 _Static_assert(sizeof(ps5_display_op_1160) == 0x18,
-               "Sonic display-op record ABI changed");
+               "display-op record ABI changed");
 
 const ps5_display_op_1160 ps5_display_ops_1160[29] = {
     {0x00362730, 0, 0, 0},
@@ -50,7 +50,7 @@ const ps5_display_op_1160 ps5_display_ops_1160[29] = {
 };
 
 _Static_assert(sizeof(ps5_display_ops_1160) == 29 * 0x18,
-               "Sonic display-op table size changed");
+               "display-op table size changed");
 
 #if SHELLCODE_1160_DIAGNOSTIC
 #ifndef PS5_1160_DIAG_OP_LIMIT
@@ -66,7 +66,7 @@ typedef uint64_t (*display_op1_fn)(uint32_t);
 typedef uint64_t (*display_op2_fn)(uint32_t, uint64_t);
 
 /*
- * Keep Sonic's two-layer call shape: the outer loop CALLs this leaf, then the
+ * Keep the 13.60 two-layer call shape: the outer loop CALLs this leaf, then the
  * leaf tail-JMPs to the selected kernel target.  The target's RET therefore
  * returns directly to the outer loop's post-operation checkpoint.
  */

@@ -95,23 +95,23 @@ volatile const uint32_t ps5_diag_clear_mp3_buffers_1160 =
 #define MP3_REQ_OFFSET 0x2420ULL
 
 /*
- * Sonic keeps these two MP3 IPC buffers in the wake blob's zero-filled data.
- * The authenticated 11.60 executable cave is 0x5000 bytes, and embedding the
- * same 0x280c bytes would make the otherwise identical display-enabled blob
- * 792 bytes too large.  The checked linux_info alias owns one complete 0x4000
- * page; linux_info occupies 0xc38 bytes, leaving a disjoint, retained tail for
- * the exact same buffers without moving the proven cave.  Preserve Sonic's
- * observed layout: the 0x1408-byte response buffer first, an 0x18-byte gap,
- * then the 0x1404-byte request buffer.  The 13.00/13.20 port uses the same
- * offsets.
+ * The 13.60 reference ELF keeps these two MP3 IPC buffers in its wake blob's
+ * zero-filled data.  The authenticated 11.60 executable cave is 0x5000 bytes,
+ * and embedding the same 0x280c bytes would make the otherwise identical
+ * display-enabled blob 792 bytes too large.  The checked linux_info alias
+ * owns one complete 0x4000 page; linux_info occupies 0xc38 bytes, leaving a
+ * disjoint, retained tail for the exact same buffers without moving the
+ * proven cave.  Preserve the reference MP3 buffer layout: the 0x1408-byte
+ * response buffer first, an 0x18-byte gap, then the 0x1404-byte request
+ * buffer.  The 13.00/13.20 port uses the same offsets.
  */
 _Static_assert(sizeof(struct linux_info) <= MP3_RSP_OFFSET,
                "linux_info overlaps MP3 response buffer");
 _Static_assert((MP3_REQ_OFFSET & 31) == 0 && (MP3_RSP_OFFSET & 31) == 0,
-               "Sonic MP3 buffers must remain 32-byte aligned");
+               "MP3 buffers must remain 32-byte aligned");
 _Static_assert(MP3_RSP_OFFSET + MP3_RSP_WORDS * sizeof(int) + 0x18ULL ==
                    MP3_REQ_OFFSET,
-               "Sonic MP3 response/request gap changed");
+               "MP3 response/request gap changed");
 _Static_assert(MP3_REQ_OFFSET + MP3_REQ_WORDS * sizeof(int) <= PAGE_SIZE,
                "MP3 buffers exceed the retained linux_info page");
 
@@ -189,7 +189,7 @@ static uint64_t read_tsc(void) {
 static void wait_for_transmitter(void) {
   const uint64_t start = read_tsc();
 
-  /* Sonic's 13.60 wake blob waits through TSC delta 349,999,999. */
+  /* The 13.60 reference wake blob waits through TSC delta 349,999,999. */
   while (read_tsc() - start <= 349999999ULL)
     __asm__ volatile("pause");
 }

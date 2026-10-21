@@ -11,7 +11,7 @@ static inline int shellcode_kernel_va_is_canonical(uint64_t va) {
 
 /*
  * Fail-closed preflight for the exact 11.60 candidate.  UART remains optional
- * because retail testing is intentionally UART-free.  Sonic's VBIOS,
+ * because retail testing is intentionally UART-free.  The VBIOS,
  * transmitter, and MP3 display-handoff inputs are mandatory: the wake path
  * must never silently degrade back to the known-black-screen headless build.
  */

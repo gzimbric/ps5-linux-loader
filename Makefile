@@ -10,7 +10,7 @@
 	FORCE_1160_DMA_E820_BOUNDED_WIFI
 
 # Run 15, the hardware-validated 11.60 Linux/display build, was compiled with
-# the diagnostic gates present and set to the complete Sonic path.  Keep that
+# the diagnostic gates present and set to the complete display path.  Keep that
 # exact configuration as the recursive-build default and export it so the
 # audit evaluates the same mode that the wake sub-build compiled.
 PS5_1160_DIAGNOSTIC ?= 1
@@ -140,7 +140,7 @@ stage2a-1160-check: stage2a-1160
 	@strings -a $(STAGE2A_BIN) | grep -q \
 		'no hook/HV/rest/Linux action was taken'
 
-# Full 11.60 port: official loader flow and Sonic's high-firmware resume
+# Full 11.60 port: official loader flow and the 13.60 high-firmware resume
 # architecture, with the already hardware-proven 11.60 startup-AP payload.
 break-hv-1160-check:
 	$(MAKE) -C shellcode_break_hv check

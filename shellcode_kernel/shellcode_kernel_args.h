@@ -28,8 +28,8 @@ typedef struct {
 } shellcode_kernel_args;
 
 /*
- * This layout is the public wake-shellcode ABI.  In particular, Sonic's
- * known-working image uses the same 0x98-byte argument block.  Keep these
+ * This layout is the public wake-shellcode ABI.  In particular, the 13.60
+ * reference image uses the same 0x98-byte argument block.  Keep these
  * assertions exhaustive: an innocent field insertion must not silently
  * produce a blob that interprets an older argument block differently.
  */

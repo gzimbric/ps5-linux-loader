@@ -51,7 +51,7 @@ typedef struct _offset_list {
   uint64_t PS5_WIFI_FW_OFFSET;
   uint64_t PS5_WIFI_FW_SIZE;
 
-  /* 8.xx+ startup-AP carrier (Sonic/Byepervisor architecture). */
+  /* 8.xx+ startup-AP carrier (13.60 reference/Byepervisor architecture). */
 #if STAGE2A_1160 || FW_1160_PORT
   /*
    * The dedicated 11.60 builds keep the Run 15 table: only the carrier

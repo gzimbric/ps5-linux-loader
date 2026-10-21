@@ -223,7 +223,7 @@ for field_index, value in {
     11: 0x2E7E40,   # FUN_MEMCPY
     12: 0xA57354,   # final #GP/#SX: add rsp,0x28; pop rbp; ret
     23: 0xD2B000,   # KERNEL_CODE_CAVE
-    29: 0x62806F00,  # Sonic's executable identity-mapped HV cave
+    29: 0x62806F00,  # HV_CODE_CAVE_PA, executable identity-mapped HV cave
     30: 0x62847551,  # HV_HANDLE_VMEXIT_PA
     33: 0x3DB7A40,  # G_VBIOS, resolved by 0x10000-byte copy-loop xref
     34: 0xC800C0,   # transmitter_control
@@ -245,9 +245,9 @@ else:
 assert u64(0x6284AC20) not in off_1160
 assert off_1160[12 * 8 : 13 * 8] != off_1160[42 * 8 : 43 * 8]
 
-# Sonic's complete post-stage HDMI sequence, translated entry-for-entry to
-# authenticated 11.60 homologs.  Preserve the original 0x18-byte record ABI,
-# order, EDI values, and the one two-argument call.
+# The 13.60 reference ELF's complete post-stage HDMI sequence, translated
+# entry-for-entry to authenticated 11.60 homologs.  Preserve the original
+# 0x18-byte record ABI, order, EDI values, and the one two-argument call.
 display_records = (
     (0x00362730, 0, 0, 0),
     (0x00362980, 0, 0, 0),
@@ -567,15 +567,16 @@ else:
     for value in exact_size_immediates:
         assert value in elf, value
 
-# The display-enabled build mirrors Sonic's pre-Linux handoff and must never
-# silently regress to the run-7 headless compile.  Its two large MP3 buffers
-# live in the checked, retained tail of the linux_info page so the exact
-# hardware-proven 0x5000 executable cave is not moved.
+# The display-enabled build mirrors the 13.60 reference ELF's pre-Linux
+# display handoff and must never silently regress to the run-7 headless
+# compile.  Its two large MP3 buffers live in the checked, retained tail of
+# the linux_info page so the exact hardware-proven 0x5000 executable cave is
+# not moved.
 assert "SHELLCODE_1160_HEADLESS" not in wake_makefile
 assert "PS5_1160_DIAG_CLEAR_MP3_BUFFERS ?= 0" in wake_makefile
 assert "-DPS5_1160_DIAG_CLEAR_MP3_BUFFERS=" in wake_makefile
 
-# Match the static Sonic layout exactly inside the retained 0x4000-byte page:
+# Match the 13.60 MP3 buffer layout exactly in the retained 0x4000-byte page:
 # rsp[1282] at +0x1000, an 0x18-byte gap, then req[1281] at +0x2420.
 mp3_rsp_offset = 0x1000
 mp3_rsp_size = 1282 * 4
@@ -597,7 +598,7 @@ for required in (
     "MP3_RSP_OFFSET 0x1000ULL",
     "MP3_REQ_OFFSET 0x2420ULL",
     "MP3_RSP_WORDS * sizeof(int) + 0x18ULL ==",
-    "Sonic MP3 buffers must remain 32-byte aligned",
+    "MP3 buffers must remain 32-byte aligned",
     "args.linux_info_va + MP3_REQ_OFFSET",
     "args.linux_info_va + MP3_RSP_OFFSET",
 ):
@@ -627,8 +628,9 @@ for display_offset in (
 ):
     assert display_offset in offsets_present_source, display_offset
 
-# Sonic uses two semantically different stack pivots.  #DB has no error code,
-# whereas #GP/#SX have one extra qword that the pop-rbp pivot must consume.
+# The resume path uses two semantically different stack pivots.  #DB has no
+# error code, whereas #GP/#SX have one extra qword that the pop-rbp pivot
+# must consume.
 assert "gate_encode(kg(env_offset.GAD_PIVOT_ADD_RSP28_RET)" in hv_defeat_source
 assert hv_defeat_source.count(
     "setidt(13, kg(env_offset.GAD_ADD_RSP_28_POP_RBP_RET), 7);"
@@ -902,8 +904,8 @@ if hv_dump_path:
 
 # Firmware 11.60 XOM remains NPT-enforced until the startup-AP strike.  A live
 # ktext content read before that strike hard-freezes the console even after the
-# guest XO bit is cleared.  Preserve Sonic's ordering: metadata/PTE validation
-# now, copy into the cave only after NPT is disabled during resume.
+# guest XO bit is cleared.  Preserve the 13.60 ordering: metadata/PTE
+# validation now, copy into the cave only after NPT is disabled during resume.
 assert "page-table-only wake-cave validation passed" in hv_defeat_source
 validate_wake_cave_source = hv_defeat_source.split(
     "static int validate_wake_cave", 1
@@ -911,7 +913,7 @@ validate_wake_cave_source = hv_defeat_source.split(
 for forbidden_read in ("kread(", "kread64(", "kernel_copyout(", "pa_to_dmap("):
     assert forbidden_read not in validate_wake_cave_source, forbidden_read
 
-# Sonic's two high-firmware inner-HV deltas: reserved E820 start and direct
+# The two high-firmware inner-HV deltas: reserved E820 start and direct
 # UART enable.  Check operand constants rather than compiler register choice.
 assert u64(0x980000000) in inner_hv
 assert u32(0xC0115110) in inner_hv
