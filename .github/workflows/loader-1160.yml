@@ -1,0 +1,101 @@
+name: 11.60 loader
+run-name: 11.60 loader (${{ github.ref_name }})
+
+# Builds the firmware 11.60 loader ELFs on main, for pull requests to main,
+# and on manual runs:
+# linux-1160 always, and linux-1160-dma-e820, linux-1160-dma-e820-visible,
+# linux-1160-dma-e820-wifi, linux-1160-dma-e820-bounded and
+# linux-1160-dma-e820-bounded-wifi on revisions that have them. One hosted
+# macOS job installs the toolchain once, then gives every target an isolated
+# clean build. It runs the structural audit that needs no firmware dumps and
+# uploads all ELFs, checksums and build metadata as one workflow artifact.
+#
+# These artifacts are build checks for testers, not releases. The job installs
+# whatever Homebrew ships at the time, so a file hash can differ when clang or
+# lld writes a different version into .comment and the build ID follows from
+# that. The job also hashes each ELF with .comment and .note.gnu.build-id
+# removed and compares that with the pinned release file. A match means the
+# code and data are byte-identical to the release. Hardware runs should still
+# use the exact release ELF named by the applicable tester guide.
+#
+# linux-1160-check is not run here. Its release audit needs the private 11.60
+# ktext and HV dumps, which must never be uploaded to GitHub. Compiling does
+# not read them.
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - LICENSE
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - LICENSE
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: loader-1160-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The SDK release the Run 15 build used.
+  PS5_PAYLOAD_SDK_VERSION: v0.44
+  PS5_PAYLOAD_SDK_SHA256: 4d06eab777bb135705b5a6816688c9132efb246093fe606ac488ab6cf65ca5b0
+  # Apple's make 3.81 sorts $(wildcard source/*.c) by locale. Under the
+  # runner's en_US.UTF-8, loader_staging_1160.o links before loader.o and the
+  # ELF layout changes. The release builds used C order.
+  LC_ALL: C
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+
+jobs:
+  build:
+    name: all targets
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install toolchain
+        run: |
+          set -euo pipefail
+          brew install llvm lld x86_64-elf-gcc
+          # Homebrew's llvm is keg-only. The SDK wrappers find it through
+          # LLVM_CONFIG and find ld.lld through brew --prefix lld.
+          llvm_bin="$(brew --prefix llvm)/bin"
+          echo "$llvm_bin" >> "$GITHUB_PATH"
+          echo "LLVM_CONFIG=$llvm_bin/llvm-config" >> "$GITHUB_ENV"
+
+      - name: Fetch ps5-payload-sdk
+        run: |
+          set -euo pipefail
+          zip="$RUNNER_TEMP/ps5-payload-sdk.zip"
+          curl -fsSL -o "$zip" \
+            "https://github.com/ps5-payload-dev/sdk/releases/download/$PS5_PAYLOAD_SDK_VERSION/ps5-payload-sdk.zip"
+          echo "$PS5_PAYLOAD_SDK_SHA256  $zip" | shasum -a 256 -c
+          unzip -q "$zip" -d "$RUNNER_TEMP"
+          echo "PS5_PAYLOAD_SDK=$RUNNER_TEMP/ps5-payload-sdk" >> "$GITHUB_ENV"
+
+      - name: Build, audit and compare all targets
+        id: build
+        run: .github/scripts/build-loader-1160.sh
+
+      - name: Upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.build.outputs.artifact }}
+          path: ${{ steps.build.outputs.dist }}/
+          if-no-files-found: error
