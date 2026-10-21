@@ -288,8 +288,8 @@ and, for those two, checks that the fields still match. Setting
 pins both bounded files. The bounded ELF is `1c80b040c5a808b3f09418728424a875d5598fe6b2a5d68adeb4db5979a7541a`
 (`fdabc92c7f7373e2805c66e8614d36703d63e1df67c32b4230bf8f6168651724`
 with `.comment` and the build ID removed). It remains unbooted and is the
-loader selected for the upcoming MediaTek Image 4 track because it does not
-write IW620 firmware. The bounded Wi-Fi ELF for IW620 consoles is
+loader for MediaTek consoles on Image 4 because it does not write IW620
+firmware. The bounded Wi-Fi ELF for IW620 consoles is
 `e9fe6469943e97a635eccd3f674e55876b56cd1bbd69023eee3af4acea3a1b5f`
 (`7b4588e3441fb83b3843196c6ebb20fb630dc737cdd7b9e0945dc7a86fdfbace`
 with those sections removed). Run 21 booted that Wi-Fi build once with an
@@ -313,24 +313,28 @@ for direct file targets plus CI coverage for all six 11.60 variants. The
 historical `firmware-11.60-dma-e820` branch remains only as provenance for the
 Run 18 through Run 21 commits.
 
-The bounded tester prerelease is for exact retail firmware 11.60 only. The
-current public
-[CachyOS Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-3)
-test uses the bounded Wi-Fi ELF on IW620 hardware; follow the
+The bounded tester prerelease is for exact retail firmware 11.60 only.
+[CachyOS Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-3),
+still the newest CachyOS image with an identity-verified hardware boot, uses
+the bounded Wi-Fi ELF on IW620 hardware; follow the
 [Image 3 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-3-tester-guide.md).
-For the upcoming unified Image 4, select the loader by PCI device:
+The public
+[CachyOS Image 4](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-4)
+tester prerelease is one image for both Wi-Fi chipsets, so select the loader
+by PCI device:
 
 | Console Wi-Fi device | Loader | SHA-256 | Firmware path |
 |---|---|---|---|
 | Marvell/NXP IW620 `1b4b:2b56` | `ps5-linux-loader-1160-dma-e820-bounded-wifi.elf` | `e9fe6469943e97a635eccd3f674e55876b56cd1bbd69023eee3af4acea3a1b5f` | Copies that console's own IW620 firmware to the USB boot partition |
 | MediaTek MT7921 `14c3:7961` | `ps5-linux-loader-1160-dma-e820-bounded.elf` | `1c80b040c5a808b3f09418728424a875d5598fe6b2a5d68adeb4db5979a7541a` | Does not dump IW620 firmware; Image 4 packages the firmware used by `mt7921e` |
 
-The non-Wi-Fi loader has not been booted, and no exact unified Image 4
-artifact has been booted. MediaTek Wi-Fi has passed source and structural
-checks only. MediaTek Bluetooth hardware and its usable driver path remain
-unknown, so none of this establishes MediaTek hardware support. Follow the
-[unreleased Image 4 test plan](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-4-tester-guide.md)
-for its evidence and clean-flash requirements.
+The non-Wi-Fi loader has not been booted, and the exact Image 4 artifact has
+only been built and checked in CI; it has not been booted. MediaTek Wi-Fi has
+passed source and structural checks only. MediaTek Bluetooth hardware and its
+usable driver path remain unknown, so none of this establishes MediaTek
+hardware support. Follow the
+[Image 4 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-4-tester-guide.md)
+for its exact artifact identity, evidence and clean-flash requirements.
 
 `linux-1160-check` fails unless all of the following hold:
 
@@ -499,9 +503,15 @@ That run reached HDMI and wired SSH, joined Wi-Fi through Plasma with the
 loader-copied console IW620 firmware, paired and reconnected a DualSense
 through the internal IW620 Bluetooth path, and completed both session
 switches. Those are Image 3 results on one IW620 console, not evidence for the
-unbooted non-Wi-Fi loader or for MediaTek hardware. The upcoming unified Image
-4 keeps the IW620 path and adds a structurally checked `mt7921e` path, but no
-exact Image 4 artifact has been booted and the MediaTek Bluetooth path remains
+unbooted non-Wi-Fi loader or for MediaTek hardware.
+
+The public
+[CachyOS Image 4 tester prerelease](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-4)
+is pinned by tag `cachyos1160-k73-image-4` at source commit
+`e82cefaac9f4c166b4b961ea64597bb5a2a1d1e3`. It keeps rmux's Linux 7.3 patch
+set and the IW620 path, and adds a structurally checked `mt7921e` path for
+MediaTek consoles. CI built it and passed the image verifier, but the exact
+Image 4 artifact has not been booted and the MediaTek Bluetooth path remains
 unknown.
 
 ## Hardware test boundary

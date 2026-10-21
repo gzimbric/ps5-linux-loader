@@ -18,13 +18,16 @@
 > bounded Wi-Fi target once with an earlier local CachyOS 7.3 image. The same
 > bounded Wi-Fi release ELF later booted the exact public
 > [CachyOS Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-3)
-> artifact once on that console. Follow the
+> artifact once on that console. Image 3 is still the newest CachyOS image
+> with an identity-verified hardware boot. Follow the
 > [Image 3 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-3-tester-guide.md)
-> for the current public IW620 test. Image 3 retains rmux's pinned Linux 7.3
+> for that image. Image 3 retains rmux's pinned Linux 7.3
 > PS5 patch set and adds its separately documented IW620 follow-ups.
 >
-> The upcoming unified Image 4 uses one image for the two known Wi-Fi paths,
-> but the loader still depends on the console's chipset:
+> [CachyOS Image 4](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-4)
+> is now a public tester prerelease. It keeps rmux's patch set and uses one
+> image for the two known Wi-Fi paths, but the loader still depends on the
+> console's chipset:
 >
 > - An IW620 console (`1b4b:2b56`) uses
 >   `ps5-linux-loader-1160-dma-e820-bounded-wifi.elf`, SHA-256
@@ -37,10 +40,11 @@
 >   It does not dump IW620 firmware; Image 4 packages the firmware used by
 >   `mt7921e`.
 >
-> The bounded non-Wi-Fi ELF and the exact unified Image 4 have not been booted
-> on hardware. MediaTek Wi-Fi has passed source and structural checks only,
-> and the MediaTek Bluetooth hardware and driver path are unknown. See the
-> [unreleased Image 4 test plan](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-4-tester-guide.md).
+> CI built Image 4 and passed its image checks, but neither the exact Image 4
+> artifact nor the bounded non-Wi-Fi ELF has been booted on hardware. MediaTek
+> Wi-Fi has passed source and structural checks only, and the MediaTek
+> Bluetooth hardware and driver path are unknown. See the
+> [Image 4 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-4-tester-guide.md).
 > These tester files are for exact retail firmware 11.60 only.
 
 The general feature list below does not establish those features on 11.60.
@@ -211,7 +215,7 @@ If none of this helps, please report the issue in our [Discord server](https://d
 
 On this fork, GitHub Actions builds all six 11.60 targets in one hosted macOS job on pushes to `main`, pull requests into `main`, and manual runs ([loader-1160.yml](.github/workflows/loader-1160.yml)): `make linux-1160`, `make linux-1160-dma-e820`, `make linux-1160-dma-e820-visible`, `make linux-1160-dma-e820-wifi`, `make linux-1160-dma-e820-bounded` and `make linux-1160-dma-e820-bounded-wifi`. The toolchain and SDK are installed once, but every target starts from `make clean` so build products cannot leak between configurations. Feature-branch and tag pushes do not start duplicate jobs; use the manual trigger when an older revision needs checking. Historical revisions that predate a target skip only that missing target. The Run 15, Run 18 DMA E820 and both bounded-loader tester-prerelease files are pinned. One combined workflow artifact contains all six ELFs, a top-level `SHA256SUMS`, and separate checksums and `build-info.txt` records for each target.
 
-These builds are for build checks and testers. They do not replace the release ELFs (Run 15 `422b87ec...`, Run 18 DMA E820 `2e1758a2...`, bounded `1c80b040...`, bounded Wi-Fi `e9fe6469...`). CI uses whatever Homebrew currently ships, so a file hash can differ when clang or lld records a different version in `.comment` and the build ID changes with it. To check the code itself, CI also hashes the ELF with those two sections removed and compares it to the release (`f9002988...` for Run 15, `6737e735...` for Run 18, `fdabc92c...` for bounded and `7b4588e3...` for bounded Wi-Fi). The run summary shows both hashes. Use the exact release ELF named by the applicable tester guide: Image 3 uses the bounded Wi-Fi ELF on IW620 hardware; the upcoming unified Image 4 uses the bounded Wi-Fi ELF for IW620 and the still-unbooted bounded non-Wi-Fi ELF for MediaTek.
+These builds are for build checks and testers. They do not replace the release ELFs (Run 15 `422b87ec...`, Run 18 DMA E820 `2e1758a2...`, bounded `1c80b040...`, bounded Wi-Fi `e9fe6469...`). CI uses whatever Homebrew currently ships, so a file hash can differ when clang or lld records a different version in `.comment` and the build ID changes with it. To check the code itself, CI also hashes the ELF with those two sections removed and compares it to the release (`f9002988...` for Run 15, `6737e735...` for Run 18, `fdabc92c...` for bounded and `7b4588e3...` for bounded Wi-Fi). The run summary shows both hashes. Use the exact release ELF named by the applicable tester guide: Image 3 uses the bounded Wi-Fi ELF on IW620 hardware; the Image 4 tester prerelease uses the bounded Wi-Fi ELF for IW620 and the still-unbooted bounded non-Wi-Fi ELF for MediaTek.
 
 CI does not run the `*-check` targets. The release check needs the private 11.60 ktext and HV dumps, and they are never uploaded. CI runs `tests/audit_1160_port.py` without them instead, which covers the structural checks but not the release hash pins.
 
