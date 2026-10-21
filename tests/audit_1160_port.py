@@ -48,6 +48,9 @@ dma_e820_safe = dma_e820_safe_text == "1"
 visible_refusals_text = os.environ.get("PS5_1160_VISIBLE_REFUSALS", "0")
 assert visible_refusals_text in ("0", "1")
 visible_refusals = visible_refusals_text == "1"
+wifi_fw_text = os.environ.get("PS5_1160_WIFI_FW", "0")
+assert wifi_fw_text in ("0", "1")
+wifi_fw_enabled = wifi_fw_text == "1"
 if diagnostic_build:
     diag_pre_text = os.environ.get("PS5_1160_DIAG_PRE_STAGE", "5")
     diag_op_text = os.environ.get("PS5_1160_DIAG_OP_LIMIT", "29")
@@ -174,6 +177,7 @@ if release_check:
     assert diagnostic_build, "release check requires PS5_1160_DIAGNOSTIC=1"
     assert not dma_e820_safe, "Run 15 release check requires the original E820 map"
     assert not visible_refusals, "Run 15 release check requires printf-only refusals"
+    assert not wifi_fw_enabled, "Run 15 release check has no Wi-Fi firmware range"
     assert (diag_pre_stage, diag_op_limit, diag_clear_mp3_buffers) == (5, 29, 0), (
         "release check requires the hardware-tested Run 15 gates",
         diag_pre_stage,
@@ -218,6 +222,14 @@ for field_index, value in {
     42: 0x2A0EDE,   # startup #DB: add rsp,0x28; rep ret
 }.items():
     assert off_1160[field_index * 8 : field_index * 8 + 8] == u64(value), hex(value)
+# PS5_WIFI_FW_OFFSET and PS5_WIFI_FW_SIZE.  Zero makes the loader skip the
+# firmware dump, which is what the Run 15 and DMA E820 builds shipped with.
+if wifi_fw_enabled:
+    assert off_1160[37 * 8 : 38 * 8] == u64(0x1585D90)
+    assert off_1160[38 * 8 : 39 * 8] == u64(0x799BC)
+    assert elf.count(b"lib/nxp/pcieuartiw620_combo_v1.bin\0") == 1
+else:
+    assert off_1160[37 * 8 : 39 * 8] == bytes(2 * 8)
 assert u64(0x6284AC20) not in off_1160
 assert off_1160[12 * 8 : 13 * 8] != off_1160[42 * 8 : 43 * 8]
 
@@ -723,5 +735,5 @@ diag_label = (
 print(
     f"11.60 audit OK:{diag_label} elf={len(elf)} wake={len(wake)} "
     f"inner_hv={len(inner_hv)} ap={len(ap)} dma-e820-safe={int(dma_e820_safe)}"
-    f" visible-refusals={int(visible_refusals)}"
+    f" visible-refusals={int(visible_refusals)} wifi-fw={int(wifi_fw_enabled)}"
 )

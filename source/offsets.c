@@ -805,6 +805,15 @@ offset_list off_1160 = {
     .FUN_TRANSMITTER_CONTROL = 0xC800C0,
     .FUN_MP3_INITIALIZE = 0xA88270,
     .FUN_MP3_INVOKE = 0xA86E70,
+#if defined(PS5_1160_WIFI_FW) && PS5_1160_WIFI_FW
+    /*
+     * IW620 firmware range returned by the native 11.60 helper at
+     * ktext + 0x4ecfd0. Only linux-1160-dma-e820-wifi sets this, so the other
+     * 11.60 builds keep both fields zero and skip the dump.
+     */
+    .PS5_WIFI_FW_OFFSET = 0x1585D90,
+    .PS5_WIFI_FW_SIZE = 0x799BC,
+#endif
     .HV_MP_STARTUP_CALL = 0xC885D0,
     .MP_STARTUP_INIT_VECTOR = 0x3110B8,
     .DATA_CAVE = 0x2D02000,
