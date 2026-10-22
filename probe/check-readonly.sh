@@ -1,12 +1,15 @@
 #!/bin/sh
-# Build gate for the read-only probe.
+# Build gate for the probe's post-SDK-runtime collection logic.
 #   check-readonly.sh               check the probe sources
 #   check-readonly.sh NM OBJ...     also check the objects' undefined symbols
-# Fails on kernel write primitives, page-table edits, HV or rest-mode entry
-# points, raw system calls, the SDK's socket primitives, inline asm, code
-# loading, console identity APIs, sysctl writes, any ioctl other than
-# PCIOCGETCONF, any device node other than /dev/pci, and any object import
-# that is not on the list below.
+# Fails when probe source/objects request kernel write primitives, page-table
+# edits, HV or rest-mode entry points, raw system calls, socket primitives,
+# inline asm, code
+# loading, console identity APIs, sysctl writes, internal-storage paths, any
+# ioctl other than PCIOCGETCONF, any device node other than /dev/pci, and any
+# object import that is not on the list below. The linked ps5-payload-sdk CRT
+# is outside this gate and performs its documented process/KEX initialization
+# before main.
 set -eu
 dir=$(cd "$(dirname "$0")" && pwd)
 srcs="$dir/probe.c $dir/hash.c $dir/hash.h"
@@ -22,6 +25,7 @@ bad="$bad|dlopen|dlsym|LoadStartModule|exec[lv]|/dev/mem|/dev/kmem|O_RDWR"
 bad="$bad|SerialNumber|IdPs|PsId|Idps|Psid|MacAddr|AccountId|kenv"
 bad="$bad|syscall|setsockopt|getsockopt|(^|[^A-Za-z_])socket\(|mmap|mprotect"
 bad="$bad|ptrace|sysarch|payload_get_args|fcntl\("
+bad="$bad|/data/|/user/|/system_data/|/mnt/sandbox/|O_CREAT[^;]*0(644|666|777)"
 
 if grep -nE "$bad" $srcs; then
   echo "check-readonly: forbidden call or API in the probe sources" >&2
@@ -56,7 +60,7 @@ if [ $# -ge 2 ]; then
   allow="$allow sceKernelGetMainSocId sceKernelSendNotificationRequest"
   allow="$allow sha256_final sha256_hex sha256_init sha256_update fnv64_masked"
   allow="$allow __error close cpuset_getaffinity cpuset_setaffinity fsync"
-  allow="$allow getpid gmtime_r ioctl memcmp memcpy memset mkdir open poll"
+  allow="$allow getpid gmtime_r ioctl memcmp memcpy memset open poll"
   allow="$allow rename sched_yield signal snprintf stat statfs strchr strcmp"
   allow="$allow strcspn strftime strlen strrchr sysctl sysctlbyname"
   allow="$allow sysctlnametomib time unlink usleep vsnprintf write "

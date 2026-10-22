@@ -1,13 +1,16 @@
 /*
- * ps5-1160-probe: read-only data collection for retail firmware 11.60 on a
+ * ps5-1160-probe: bounded USB data collection for retail firmware 11.60 on a
  * regular PS5 or a PS5 Pro. Send it to elfldr (port 9021) after the usual
  * kernel exploit. See README.md.
  *
- * It never writes kernel memory, never reads kernel text (execute-only on
- * 11.60), and never touches the hypervisor, MMIO or rest mode. The page
- * tables are found only through SDK values (kernel_get_proc, KERNEL_OFFSET_*,
- * KERNEL_ADDRESS_*), which elfldr already depends on, so this works on a
- * kernel build that differs from the regular one. Every kernel read is one of:
+ * The probe logic performs no loader, kernel-text or hypervisor patches and
+ * never reads HV target data, MMIO or rest-mode state. The SDK runtime/KEX
+ * initializes before main and patches this process's credentials/call-range
+ * bounds; kernel_copyout also uses temporary exploit-pipe metadata writes.
+ * Page tables are found only through SDK values (kernel_get_proc,
+ * KERNEL_OFFSET_*, KERNEL_ADDRESS_*), which elfldr already depends on, so
+ * this works on a kernel build that differs from the regular one. Every
+ * kernel read requested by the probe logic is one of:
  *   - a few pointer reads that find this process's pmap and proc0's pmap,
  *   - a page-table entry read through the direct map,
  *   - a kernel data read inside [kdata, kdata + KDATA_LEN) whose 4-KiB frames
@@ -53,17 +56,22 @@ int sceKernelSendNotificationRequest(int, void *, size_t, int);
  * exports it; the v0.44 headers do not declare it. */
 extern const intptr_t KERNEL_ADDRESS_DMAP_BASE;
 
-#define PROBE_VERSION "2"
+#define PROBE_VERSION "3"
 #define FW_1160_RAW 0x11600005U
 #define PRO_SOC_ID 0x840fd0
 
+#ifndef PROBE_MAP_ONLY
+#define PROBE_MAP_ONLY 0
+#endif
+
+#if PROBE_MAP_ONLY
+#define REPORT_BASE "ps5-1160-map-probe-report"
+#else
 #define REPORT_BASE "ps5-1160-probe-report"
+#endif
 #define DUMP_BASE "ps5-1160-kdata"
 #ifndef USB_ROOT_FMT
 #define USB_ROOT_FMT "/mnt/usb%d"
-#endif
-#ifndef FALLBACK_DIR
-#define FALLBACK_DIR "/data/ps5-1160-probe"
 #endif
 #define DEVKIT_LIB "/system/priv/lib/libSceDeci5Dtracep.sprx"
 #define TESTKIT_LIB "/system/priv/lib/libSceDeci5Ttyp.sprx"
@@ -115,6 +123,10 @@ static const char BUILD_STRING[] =
   "229d76bb99e654057177f359f91ff279b55438b8eaf67ae3480f4b8d343e3954"
 #define HV_R_REGULAR 0x62800000UL
 #define HV_S_REGULAR 0x2029000UL
+#define HV_VMCB_REGULAR_LO 0x200000UL
+#define HV_VMCB_REGULAR_HI 0x1000000UL
+#define HV_VMCB_PRO_LO 0xA00000UL
+#define HV_VMCB_PRO_HI 0x1800000UL
 
 #define PTE_P (1UL << 0)
 #define PTE_RW (1UL << 1)
@@ -226,6 +238,11 @@ static int pick_names(void) {
     else
       snprintf(suffix, sizeof(suffix), "-%02d", n);
     out_path(a, sizeof(a), REPORT_BASE, ".txt");
+    if (PROBE_MAP_ONLY) {
+      if (!exists(a))
+        return 0;
+      continue;
+    }
     out_path(b, sizeof(b), DUMP_BASE, ".bin");
     out_path(c, sizeof(c), DUMP_BASE, ".bin.part");
     if (!exists(a) && !exists(b) && !exists(c))
@@ -263,7 +280,7 @@ static int try_dir(const char *dir, int need_mount) {
   if (pick_names())
     return -1;
   out_path(path, sizeof(path), REPORT_BASE, ".txt");
-  report_fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+  report_fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
   return report_fd >= 0 ? 0 : -1;
 }
 
@@ -275,12 +292,6 @@ static int open_report(void) {
     if (try_dir(dir, 1) == 0)
       return 0;
   }
-  if (mkdir(FALLBACK_DIR, 0777) && errno != EEXIST) {
-    out_dir[0] = 0;
-    return -1;
-  }
-  if (try_dir(FALLBACK_DIR, 0) == 0)
-    return 0;
   out_dir[0] = 0;
   return -1;
 }
@@ -1022,6 +1033,146 @@ static void hv_candidates(void) {
   out("  PA deny list: %d range(s)%s\n", ndeny, deny_full ? ", OVERFLOW" : "");
 }
 
+/* Map coverage of the HV candidate, without reading any byte in the region.
+ * walk_va() reads page-table entries only. A mapped HV leaf normally returns
+ * WK_DENIED because parse_efi_map() deliberately put the target PA on the
+ * deny list; leaf >= 0 still gives us the mapping and its physical address. */
+struct hv_map_state {
+  int mapped;
+  int identity;
+  int scan_safe;
+  int leaf;
+  int upper_xo;
+  uint64_t size;
+  uint64_t flags;
+};
+
+static struct hv_map_state hv_map_state(uint64_t pa) {
+  struct walk w;
+  struct hv_map_state s = {0};
+
+  int rc = walk_va(dmap + pa, &w);
+  if (w.leaf < 0)
+    return s;
+  s.mapped = 1;
+  s.identity = (w.pa & ~(FRAME - 1)) == pa;
+  /* The target frame is deliberately on the PA deny list. Reaching
+   * WK_DENIED therefore proves that every earlier read-safety check passed:
+   * present, non-XO and write-back. No byte from the target was read. */
+  s.scan_safe = rc == WK_DENIED;
+  s.leaf = w.leaf;
+  s.upper_xo = w.upper_xo;
+  s.size = w.size;
+  s.flags = w.e[w.leaf] &
+            (PTE_RW | PTE_US | PTE_PWT | PTE_PCD | PTE_PAT4K | PTE_G |
+             PTE_PATBIG | PTE_XO | PTE_NX);
+  return s;
+}
+
+static int same_hv_map_state(const struct hv_map_state *a,
+                             const struct hv_map_state *b) {
+  return a->mapped == b->mapped && a->identity == b->identity &&
+         a->scan_safe == b->scan_safe && a->leaf == b->leaf &&
+         a->upper_xo == b->upper_xo &&
+         a->size == b->size && a->flags == b->flags;
+}
+
+static void print_hv_map_run(uint64_t start, uint64_t end,
+                             const struct hv_map_state *s) {
+  if (!s->mapped) {
+    out("    R+%#09lx..R+%#09lx  not mapped\n", start, end);
+    return;
+  }
+  out("    R+%#09lx..R+%#09lx  mapped %s %s L%d/%#lx%s%s%s%s%s%s%s\n",
+      start, end, s->identity ? "identity" : "ALIAS",
+      s->scan_safe ? "scan-safe" : "NOT-SAFE", s->leaf, s->size,
+      (s->flags & PTE_RW) ? " RW" : " RO",
+      (s->flags & PTE_US) ? " US" : "",
+      (s->flags & PTE_PWT) ? " PWT" : "",
+      (s->flags & PTE_PCD) ? " PCD" : "",
+      ((s->leaf == 3 && (s->flags & PTE_PAT4K)) ||
+       (s->leaf < 3 && (s->flags & PTE_PATBIG)))
+          ? " PAT"
+          : "",
+      (s->flags & PTE_XO) || s->upper_xo ? " XO" : "",
+      (s->flags & PTE_NX) ? " NX" : "");
+}
+
+static void hv_mapping_coverage(void) {
+  struct range hv = {0};
+  uint64_t mapped = 0, identity = 0;
+  uint64_t scan_safe = 0;
+  uint64_t regular_mapped = 0, regular_identity = 0, regular_safe = 0;
+  uint64_t pro_mapped = 0, pro_identity = 0, pro_safe = 0;
+  int src = -1;
+
+  if (ncands[SRC_METADATA]) {
+    hv = cands[SRC_METADATA][0];
+    src = SRC_METADATA;
+  } else if (ncands[SRC_SYSCTL]) {
+    hv = cands[SRC_SYSCTL][0];
+    src = SRC_SYSCTL;
+  }
+
+  section("HV direct-map coverage (page-table entries only, HV not read)");
+  if (src < 0 || !hv.size || (hv.base & (FRAME - 1)) ||
+      (hv.size & (FRAME - 1))) {
+    out("  no page-aligned HV candidate to walk\n");
+    return;
+  }
+
+  out("  using %s first candidate: R %#lx S %#lx (%lu frames)\n",
+      src_name[src], hv.base, hv.size, hv.size / FRAME);
+  struct hv_map_state run = hv_map_state(hv.base);
+  uint64_t run_start = 0;
+  for (uint64_t off = 0; off < hv.size; off += FRAME) {
+    struct hv_map_state cur = hv_map_state(hv.base + off);
+    if (off && !same_hv_map_state(&run, &cur)) {
+      print_hv_map_run(run_start, off, &run);
+      run = cur;
+      run_start = off;
+    }
+    mapped += cur.mapped;
+    identity += cur.mapped && cur.identity;
+    scan_safe += cur.mapped && cur.identity && cur.scan_safe;
+    if (off >= HV_VMCB_REGULAR_LO && off < HV_VMCB_REGULAR_HI) {
+      regular_mapped += cur.mapped;
+      regular_identity += cur.mapped && cur.identity;
+      regular_safe += cur.mapped && cur.identity && cur.scan_safe;
+    }
+    if (off >= HV_VMCB_PRO_LO && off < HV_VMCB_PRO_HI) {
+      pro_mapped += cur.mapped;
+      pro_identity += cur.mapped && cur.identity;
+      pro_safe += cur.mapped && cur.identity && cur.scan_safe;
+    }
+  }
+  print_hv_map_run(run_start, hv.size, &run);
+
+  const uint64_t total = hv.size / FRAME;
+  const uint64_t regular_total =
+      (HV_VMCB_REGULAR_HI - HV_VMCB_REGULAR_LO) / FRAME;
+  const uint64_t pro_total = (HV_VMCB_PRO_HI - HV_VMCB_PRO_LO) / FRAME;
+  out("  full region: %lu/%lu mapped, %lu/%lu identity, %lu/%lu "
+      "scan-safe\n",
+      mapped, total, identity, total, scan_safe, total);
+  out("  regular VMCB hypothesis R+%#lx..R+%#lx: %lu/%lu mapped, "
+      "%lu/%lu identity, %lu/%lu scan-safe%s\n",
+      HV_VMCB_REGULAR_LO, HV_VMCB_REGULAR_HI, regular_mapped, regular_total,
+      regular_identity, regular_total, regular_safe, regular_total,
+      regular_mapped == regular_total && regular_identity == regular_total &&
+              regular_safe == regular_total
+          ? "  PASS"
+          : "  NOT SAFE TO SCAN");
+  out("  Pro VMCB hypothesis     R+%#lx..R+%#lx: %lu/%lu mapped, "
+      "%lu/%lu identity, %lu/%lu scan-safe%s\n",
+      HV_VMCB_PRO_LO, HV_VMCB_PRO_HI, pro_mapped, pro_total, pro_identity,
+      pro_total, pro_safe, pro_total,
+      pro_mapped == pro_total && pro_identity == pro_total &&
+              pro_safe == pro_total
+                     ? "  PASS"
+                     : "  NOT SAFE TO SCAN");
+}
+
 /* ---- anchors ----------------------------------------------------------- */
 
 static int a_build, a_image, a_facs = -1, a_iw620 = -1;
@@ -1243,7 +1394,7 @@ static void page_walks(int gate) {
 /* ---- CPU pinning ------------------------------------------------------- */
 
 static void cpu_pin(void) {
-  uint64_t old[2] = {0, 0}, want[2] = {1UL << 15, 0}, all[2] = {0xffff, 0};
+  uint64_t old[2] = {0, 0}, want[2] = {1UL << 15, 0}, restored[2] = {0, 0};
   int have_old;
 
   section("CPU pinning (this thread only)");
@@ -1251,16 +1402,31 @@ static void cpu_pin(void) {
                                 sizeof(old), (cpuset_t *)old) == 0;
   out("  running on CPU %d, affinity %s%#lx\n", sceKernelGetCurrentCpu(),
       have_old ? "" : "unknown ", old[0]);
+  if (!have_old) {
+    out("  pin to CPU 15: skipped; original affinity could not be saved "
+        "(errno %d)\n",
+        errno);
+    return;
+  }
   if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(want),
                          (const cpuset_t *)want)) {
     out("  pin to CPU 15: failed (errno %d)\n", errno);
-  } else {
-    sched_yield();
-    usleep(1000);
-    out("  pin to CPU 15: ok, now on CPU %d\n", sceKernelGetCurrentCpu());
+    return;
   }
-  cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(old),
-                     (const cpuset_t *)(have_old ? old : all));
+  sched_yield();
+  usleep(1000);
+  out("  pin to CPU 15: ok, now on CPU %d\n", sceKernelGetCurrentCpu());
+  if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(old),
+                         (const cpuset_t *)old)) {
+    out("  restore original affinity: FAILED (errno %d)\n", errno);
+    return;
+  }
+  if (cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1,
+                         sizeof(restored), (cpuset_t *)restored) ||
+      memcmp(old, restored, sizeof(old)))
+    out("  restore original affinity: FAILED readback\n");
+  else
+    out("  restore original affinity: ok (%#lx)\n", restored[0]);
 }
 
 /* ---- devices ----------------------------------------------------------- */
@@ -1541,7 +1707,7 @@ static int dump_kdata(int gate, char sha_hex[65], const char **why) {
   }
   out_path(part, sizeof(part), DUMP_BASE, ".bin.part");
   out_path(final, sizeof(final), DUMP_BASE, ".bin");
-  int fd = open(part, O_WRONLY | O_CREAT | O_EXCL, 0644);
+  int fd = open(part, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (fd < 0) {
     out("  cannot create %s (errno %d), dump skipped\n", part, errno);
     *why = "cannot create the file";
@@ -1673,8 +1839,11 @@ static void out_reasons_skipped(void) {
   out("\n  Anchors do not match the regular 11.60 build. Skipped, because they "
       "use regular-build offsets: FACS, IW620 hash, EFI slot, off_1160 pmap "
       "pointer, IDT, TSS, DATA_CAVE, G_VBIOS, code-cave walks. The boot "
-      "metadata is still found by signature, and the kdata window is still "
-      "dumped.\n");
+      "metadata is still found by signature");
+  if (PROBE_MAP_ONLY)
+    out(". This targeted build never creates a kdata dump.\n");
+  else
+    out(", and the kdata window is still dumped.\n");
 }
 
 int main(void) {
@@ -1685,33 +1854,43 @@ int main(void) {
 
   signal(SIGPIPE, SIG_IGN);
   raw_fw = kernel_get_fw_version();
-  open_report();
+
+  /* Refuse before opening or creating any file. This keeps a wrong-firmware
+   * run from touching either USB or internal storage. */
+  if (raw_fw != FW_1160_RAW) {
+    out("ps5-1160-probe refused: firmware is %#010x; retail 11.60 is "
+        "%#010x. No files were created.\n",
+        raw_fw, FW_1160_RAW);
+    notify("ps5-1160-probe refused: not firmware 11.60");
+    return 1;
+  }
+
+  /* USB-only and fail closed. Raw kernel data must never fall back to the
+   * console's internal filesystem. */
+  if (open_report()) {
+    out("ps5-1160-probe refused: no writable mounted USB drive found at "
+        "/mnt/usb0..7. No kernel data was collected.\n");
+    notify("ps5-1160-probe refused: mount a writable USB drive");
+    return 1;
+  }
 
   time_t now = time(NULL);
   struct tm tm;
   if (gmtime_r(&now, &tm))
     strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", &tm);
   out("ps5-1160-probe %s, %s\n", PROBE_VERSION, stamp);
-  out("Read-only: no kernel writes, no kernel text reads, no HV or MMIO "
-      "access.\n");
-  if (out_dir[0]) {
-    out_path(path, sizeof(path), REPORT_BASE, ".txt");
-    out("Report: %s\n", path);
-  } else {
-    out("No mounted USB drive and no %s; stdout only.\n", FALLBACK_DIR);
-  }
-  rep("Keep this report and the dump private: they come from your "
-      "console's kernel memory.\n");
-  notify("ps5-1160-probe running (read-only)");
-
-  if (raw_fw != FW_1160_RAW) {
-    out("\nRefusing: firmware is %#010x. This probe only runs on retail 11.60 "
-        "(%#010x).\n",
-        raw_fw, FW_1160_RAW);
-    notify("ps5-1160-probe refused: not firmware 11.60");
-    close_report();
-    return 1;
-  }
+  out("Bounded collection: output goes to USB; probe logic makes no loader, "
+      "kernel-text or HV patches and reads no HV target data or MMIO. "
+      "Standard SDK runtime/KEX initialization applies.\n");
+  out_path(path, sizeof(path), REPORT_BASE, ".txt");
+  out("Report: %s\n", path);
+  if (PROBE_MAP_ONLY)
+    rep("Keep this report private: it comes from your console's kernel "
+        "memory. This targeted build does not create a raw memory dump.\n");
+  else
+    rep("Keep this report and the dump private: they come from your "
+        "console's kernel memory.\n");
+  notify("ps5-1160-probe running (USB collection only)");
 
   ktext = (uint64_t)KERNEL_ADDRESS_TEXT_BASE;
   kdata = (uint64_t)KERNEL_ADDRESS_DATA_BASE;
@@ -1737,6 +1916,8 @@ int main(void) {
     image_summary();
   }
   hv_candidates();
+  if (paging)
+    hv_mapping_coverage();
   if (gate) {
     section("Identity anchors, continued (regular 11.60 offsets)");
     more_anchors(own_vmspace);
@@ -1745,13 +1926,15 @@ int main(void) {
   if (paging)
     page_walks(gate);
   cpu_pin();
-  section("Devices (/dev/pci and sysctl, filtered: no serials or addresses)");
-  pci_devices();
-  dev_sysctls();
-  out("  kernel bus device list: not walked (struct device offsets are not "
-      "verified for 11.60)\n");
+  if (!PROBE_MAP_ONLY) {
+    section("Devices (/dev/pci and sysctl, filtered: no serials or addresses)");
+    pci_devices();
+    dev_sysctls();
+    out("  kernel bus device list: not walked (struct device offsets are not "
+        "verified for 11.60)\n");
+  }
 
-  if (layout) {
+  if (layout && !PROBE_MAP_ONLY) {
     if (!out_dir[0])
       why = "no output directory";
     else if (deny_full)
@@ -1791,7 +1974,9 @@ int main(void) {
       out("%d, first R %#lx S %#lx\n", ncands[src], cands[src][0].base,
           cands[src][0].size);
   }
-  if (dumped == 0) {
+  if (PROBE_MAP_ONLY) {
+    out("  kdata dump: intentionally disabled in targeted map/TSS build\n");
+  } else if (dumped == 0) {
     out_path(path, sizeof(path), DUMP_BASE, ".bin");
     out("  kdata dump: %s, %#lx bytes, sha256 %s, %d hole range(s), %#lx "
         "hole bytes\n",
@@ -1799,15 +1984,19 @@ int main(void) {
   } else {
     out("  kdata dump: not written (%s)\n", why);
   }
-  if (layout)
+  if (layout && !PROBE_MAP_ONLY)
     out("  past the window: %lu of %lu frames mapped\n", beyond_mapped,
         BEYOND_LEN / FRAME);
   if (out_dir[0]) {
     out_path(path, sizeof(path), REPORT_BASE, ".txt");
     out("  report: %s\n", path);
   }
-  out("  Send both files privately to the person who gave you this probe. "
-      "Do not post either publicly.\n");
+  if (PROBE_MAP_ONLY)
+    out("  Send the report privately to the person who gave you this probe. "
+        "Do not post it publicly.\n");
+  else
+    out("  Send both files privately to the person who gave you this probe. "
+        "Do not post either publicly.\n");
 
   close_report();
   snprintf(msg, sizeof(msg), "ps5-1160-probe done. Files in %s",

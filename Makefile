@@ -74,8 +74,11 @@ clean:
 	$(MAKE) -C shellcode_kernel_1160 clean
 	$(MAKE) -C shellcode_break_hv clean
 
-# Read-only 11.60 data probe for testers (probe/README.md). Not part of "all";
-# it shares no code with the loader. Output: bin/ps5-1160-probe.elf
-.PHONY: probe
+# Bounded 11.60 data probes for testers (probe/README.md). Neither is part of
+# "all"; they share no code with the loader.
+.PHONY: probe probe-map
 probe:
 	$(MAKE) -C probe
+
+probe-map:
+	$(MAKE) -C probe map
