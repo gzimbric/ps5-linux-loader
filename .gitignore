@@ -1,9 +1,12 @@
 bin/
+build/pro-census/
 shellcode_0607/shellcode_0607.h
 shellcode_kernel/shellcode_kernel.h
 shellcode_kernel_13xx/shellcode_kernel_13xx.h
 shellcode_kernel_1160/shellcode_kernel_1160.h
 shellcode_break_hv/break_hv.h
+shellcode_break_hv_census/census.h
+shellcode_break_hv_census/census.map
 shellcode_hv/shellcode_hv.h
 *.elf
 *.bin
