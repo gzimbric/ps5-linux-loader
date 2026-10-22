@@ -164,6 +164,29 @@ struct ap_path_state {
   int levels;
 };
 
+enum tss_failure {
+  TSS_OK = 0,
+  TSS_IDT_READ,
+  TSS_IDT_NOT_PRESENT,
+  TSS_IDT_WRONG_IST,
+  TSS_ROW_READ,
+  TSS_RSP0_NONCANONICAL,
+  TSS_IST4_ZERO,
+  TSS_IST4_DUPLICATE,
+  TSS_IST6_OCCUPIED,
+};
+
+struct tss_snapshot {
+  uint64_t gate_lo;
+  uint64_t rsp0[NCPU];
+  uint64_t ist4[NCPU];
+  uint64_t ist6[NCPU];
+  uint32_t row_read_mask;
+  int failure;
+  int cpu;
+  int prior_cpu;
+};
+
 static int kread(uint64_t address, void *out, size_t size) {
   memset(out, 0, size);
   return kernel_copyout((intptr_t)address, out, size);
@@ -604,29 +627,92 @@ static int canonical_kernel(uint64_t value) {
   return value && (value >> 47) == 0x1ffffULL;
 }
 
-static int verify_tss_layout(uint64_t saved[NCPU]) {
-  const uint64_t tss_base = kg(OFF_COMMON_TSS);
-  uint64_t gate_lo;
-  uint64_t ist4[NCPU];
+static const char *tss_failure_name(int failure) {
+  switch (failure) {
+  case TSS_OK:
+    return "none";
+  case TSS_IDT_READ:
+    return "IDT1 read";
+  case TSS_IDT_NOT_PRESENT:
+    return "IDT1 not present";
+  case TSS_IDT_WRONG_IST:
+    return "IDT1 wrong IST";
+  case TSS_ROW_READ:
+    return "TSS row read";
+  case TSS_RSP0_NONCANONICAL:
+    return "rsp0 noncanonical";
+  case TSS_IST4_ZERO:
+    return "IST4 zero";
+  case TSS_IST4_DUPLICATE:
+    return "IST4 duplicate";
+  case TSS_IST6_OCCUPIED:
+    return "IST6 occupied";
+  default:
+    return "unknown";
+  }
+}
 
-  if (kread64(kg(OFF_IDT) + 16, &gate_lo))
-    return -1;
-  if (!((gate_lo >> 47) & 1) || ((gate_lo >> 32) & 7) != 4)
-    return -1;
+static void record_tss_failure(struct tss_snapshot *snapshot,
+                               enum tss_failure failure, int cpu,
+                               int prior_cpu) {
+  if (snapshot->failure != TSS_OK)
+    return;
+  snapshot->failure = failure;
+  snapshot->cpu = cpu;
+  snapshot->prior_cpu = prior_cpu;
+}
+
+static int inspect_tss_layout(uint64_t saved[NCPU],
+                              struct tss_snapshot *snapshot) {
+  const uint64_t tss_base = kg(OFF_COMMON_TSS);
+  memset(saved, 0, sizeof(uint64_t) * NCPU);
+  memset(snapshot, 0, sizeof(*snapshot));
+  snapshot->cpu = -1;
+  snapshot->prior_cpu = -1;
+
+  if (kread64(kg(OFF_IDT) + 16, &snapshot->gate_lo)) {
+    record_tss_failure(snapshot, TSS_IDT_READ, -1, -1);
+  } else {
+    if (!((snapshot->gate_lo >> 47) & 1))
+      record_tss_failure(snapshot, TSS_IDT_NOT_PRESENT, -1, -1);
+    if (((snapshot->gate_lo >> 32) & 7) != 4)
+      record_tss_failure(snapshot, TSS_IDT_WRONG_IST, -1, -1);
+  }
+
   for (int cpu = 0; cpu < NCPU; cpu++) {
     const uint64_t base = tss_base + (uint64_t)cpu * TSS_STRIDE;
-    uint64_t rsp0;
-    if (kread64(base + 0x04, &rsp0) ||
-        kread64(base + TSS_IST(4), &ist4[cpu]) ||
-        kread64(tss_ist_slot(tss_base, cpu, 6), &saved[cpu]))
-      return -1;
-    if (!canonical_kernel(rsp0) || !canonical_kernel(ist4[cpu]) || saved[cpu])
-      return -1;
-    for (int prior = 0; prior < cpu; prior++)
-      if (ist4[cpu] == ist4[prior])
-        return -1;
+    uint8_t row[TSS_STRIDE];
+    if (kread(base, row, sizeof(row))) {
+      record_tss_failure(snapshot, TSS_ROW_READ, cpu, -1);
+      continue;
+    }
+    snapshot->row_read_mask |= 1U << cpu;
+    memcpy(&snapshot->rsp0[cpu], row + 0x04,
+           sizeof(snapshot->rsp0[cpu]));
+    memcpy(&snapshot->ist4[cpu], row + TSS_IST(4),
+           sizeof(snapshot->ist4[cpu]));
+    memcpy(&snapshot->ist6[cpu], row + TSS_IST(6),
+           sizeof(snapshot->ist6[cpu]));
+    saved[cpu] = snapshot->ist6[cpu];
   }
-  return 0;
+
+  for (int cpu = 0; cpu < NCPU; cpu++) {
+    if (!(snapshot->row_read_mask & (1U << cpu)))
+      continue;
+    if (!canonical_kernel(snapshot->rsp0[cpu]))
+      record_tss_failure(snapshot, TSS_RSP0_NONCANONICAL, cpu, -1);
+    /* The proven production validator and map probe require the original
+     * IST4 values to be nonzero and unique. The census uses IST6, not IST4. */
+    if (!snapshot->ist4[cpu])
+      record_tss_failure(snapshot, TSS_IST4_ZERO, cpu, -1);
+    for (int prior = 0; prior < cpu; prior++)
+      if ((snapshot->row_read_mask & (1U << prior)) &&
+          snapshot->ist4[cpu] == snapshot->ist4[prior])
+        record_tss_failure(snapshot, TSS_IST4_DUPLICATE, cpu, prior);
+    if (snapshot->ist6[cpu])
+      record_tss_failure(snapshot, TSS_IST6_OCCUPIED, cpu, -1);
+  }
+  return snapshot->failure == TSS_OK ? 0 : -snapshot->failure;
 }
 
 static int restore_ists(const uint64_t saved[NCPU]) {
@@ -1112,9 +1198,25 @@ static int save_preflight_gate_report(
     uint64_t scan_hi, uint64_t mapped_pages, int mapping_rc,
     int boundary_present, int cave_present, int vmexit_present,
     int ap_path_rc, const struct ap_path_state *ap_path, int tss_rc,
-    int idt_read_rc, char *saved_path, size_t saved_path_size) {
-  char text[4096];
+    const struct tss_snapshot *tss, int idt_read_rc, char *saved_path,
+    size_t saved_path_size) {
+  char text[8192];
   size_t used = 0;
+  int rsp0_canonical = 0, ist4_nonzero = 0, ist4_unique = 0, ist6_zero = 0;
+
+  for (int cpu = 0; cpu < NCPU; cpu++) {
+    if (!(tss->row_read_mask & (1U << cpu)))
+      continue;
+    rsp0_canonical += canonical_kernel(tss->rsp0[cpu]);
+    ist4_nonzero += tss->ist4[cpu] != 0;
+    ist6_zero += tss->ist6[cpu] == 0;
+    int unique = tss->ist4[cpu] != 0;
+    for (int other = 0; other < NCPU; other++)
+      if (other != cpu && (tss->row_read_mask & (1U << other)) &&
+          tss->ist4[cpu] == tss->ist4[other])
+        unique = 0;
+    ist4_unique += unique;
+  }
 
   used = appendf(
       text, sizeof(text), used,
@@ -1125,18 +1227,35 @@ static int save_preflight_gate_report(
       "mapped pages %llu\nmapping rc %d\n"
       "boundary page present %d\ncave page present %d\n"
       "VMEXIT page present %d\nAP path rc %d levels %d NX mask 0x%llx\n"
-      "TSS rc %d\nIDT read rc %d\ncarrier armed 0\n",
+      "TSS rc %d failure %d (%s) cpu %d prior %d\n"
+      "IDT1 low %016llx present %llu IST %llu\n"
+      "TSS rows read mask 0x%04x\n"
+      "rsp0 canonical %d/16\nIST4 nonzero %d/16 unique %d/16\n"
+      "IST6 zero %d/16\nIDT read rc %d\ncarrier armed 0\n",
       CENSUS_VARIANT, kernel_get_fw_version(), sceKernelGetMainSocId(), model,
       (unsigned long long)hv_base, (unsigned long long)hv_size,
       (unsigned long long)scan_lo, (unsigned long long)scan_hi,
       (unsigned long long)mapped_pages, mapping_rc, boundary_present,
       cave_present, vmexit_present, ap_path_rc, ap_path->levels,
-      (unsigned long long)ap_path->nx_mask, tss_rc, idt_read_rc);
+      (unsigned long long)ap_path->nx_mask, tss_rc, tss->failure,
+      tss_failure_name(tss->failure), tss->cpu, tss->prior_cpu,
+      (unsigned long long)tss->gate_lo,
+      (unsigned long long)((tss->gate_lo >> 47) & 1),
+      (unsigned long long)((tss->gate_lo >> 32) & 7),
+      (unsigned)tss->row_read_mask, rsp0_canonical, ist4_nonzero, ist4_unique,
+      ist6_zero, idt_read_rc);
   for (int level = 0; level < ap_path->levels; level++)
     used = appendf(text, sizeof(text), used,
                    "AP path[%d] address 0x%llx value %016llx\n", level,
                    (unsigned long long)ap_path->address[level],
                    (unsigned long long)ap_path->original[level]);
+  for (int cpu = 0; cpu < NCPU; cpu++)
+    if (tss->row_read_mask & (1U << cpu))
+      used = appendf(text, sizeof(text), used,
+                     "TSS[%02d] rsp0 %016llx IST4 %016llx IST6 %016llx\n",
+                     cpu, (unsigned long long)tss->rsp0[cpu],
+                     (unsigned long long)tss->ist4[cpu],
+                     (unsigned long long)tss->ist6[cpu]);
   if (used >= sizeof(text))
     return -1;
   return write_unique_preflight(text, used, saved_path, saved_path_size);
@@ -1287,6 +1406,7 @@ int main(void) {
   uint64_t saved_db_gate[2], scan_lo, scan_hi, expected_base, expected_size;
   uint64_t code_lo, code_base;
   struct ap_path_state ap_path;
+  struct tss_snapshot tss_snapshot;
   struct census_report first, second;
   int pending_fd = -1;
   const int soc_id = sceKernelGetMainSocId();
@@ -1344,7 +1464,7 @@ int main(void) {
                            code_lo + CENSUS_VMEXIT_OFFSET,
                            CENSUS_VMEXIT_LENGTH);
   const int ap_path_rc = inspect_ap_path(AP_PAYLOAD_PAGE, &ap_path);
-  const int tss_rc = verify_tss_layout(saved_ists);
+  const int tss_rc = inspect_tss_layout(saved_ists, &tss_snapshot);
   const int idt_read_rc =
       kread(kg(OFF_IDT) + 16, saved_db_gate, sizeof(saved_db_gate));
   if (mapping_rc || !boundary_present || !cave_present || !vmexit_present ||
@@ -1360,7 +1480,8 @@ int main(void) {
     const int diagnostic_rc = save_preflight_gate_report(
         model, hv_base, hv_size, scan_lo, scan_hi, mapped_pages, mapping_rc,
         boundary_present, cave_present, vmexit_present, ap_path_rc, &ap_path,
-        tss_rc, idt_read_rc, diagnostic_path, sizeof(diagnostic_path));
+        tss_rc, &tss_snapshot, idt_read_rc, diagnostic_path,
+        sizeof(diagnostic_path));
     notify("11.60 census refused: %s failed; %s", failed_gate,
            diagnostic_rc ? "preflight diagnostic save failed"
                          : "private preflight diagnostic saved to USB");

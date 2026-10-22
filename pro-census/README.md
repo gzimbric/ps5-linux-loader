@@ -47,12 +47,15 @@ hashes cover those same addresses in the same order and include only PA,
 `NESTED_CTRL`, and `CLEAN`, the identity plus fields production would mutate.
 
 The 11.60 startup-AP page is NX through the direct-map translation on observed
-hardware, including PS5 Pro. Report version 3 records that exact page-table
+hardware, including PS5 Pro. Report version 4 records that exact page-table
 path, creates and fsyncs the pending USB report, clears only the NX bits needed
 to run the AP immediately before requesting suspend, then restores and reads
 back every original entry after the AP returns. Any failed clear or restoration
 retains the pending marker and requires a cold reboot. The final report records
-the original NX mask and the restoration result.
+the original NX mask and the restoration result. A refused TSS preflight also
+records the exact first failed invariant, IDT1 state, read mask, and all readable
+CPU TSS rows. It still fails closed unless rsp0 is canonical, every IST4 is
+nonzero and unique, and every IST6 slot is unused.
 
 ## Relocation-safe anchors
 
