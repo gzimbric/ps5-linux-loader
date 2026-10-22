@@ -47,7 +47,7 @@ hashes cover those same addresses in the same order and include only PA,
 `NESTED_CTRL`, and `CLEAN`, the identity plus fields production would mutate.
 
 The 11.60 startup-AP page is NX through the direct-map translation on observed
-hardware, including PS5 Pro. Report version 4 records that exact page-table
+hardware, including PS5 Pro. Report version 5 records that exact page-table
 path, creates and fsyncs the pending USB report, clears only the NX bits needed
 to run the AP immediately before requesting suspend, then restores and reads
 back every original entry after the AP returns. Any failed clear or restoration
@@ -56,6 +56,17 @@ the original NX mask and the restoration result. A refused TSS preflight also
 records the exact first failed invariant, IDT1 state, read mask, and all readable
 CPU TSS rows. It still fails closed unless rsp0 is canonical, every IST4 is
 nonzero and unique, and every IST6 slot is unused.
+
+The slot-zero continuation records its own completion without changing the
+production fallback chains. Before suspend, the main payload requires slot zero
+to have advanced from the arm stack to the startup-handler stack, every fallback
+slot to remain intact, carrier state to remain armed, and IDT1 to contain the
+temporary encoded carrier gate with its original high qword. The original gate
+is restored later by the startup breakpoint handler. A failed carrier check is
+rolled back and saved as a private `*-carrier.txt` diagnostic on the same USB as
+the pending marker. The marker is removed only when the attempt is known not to
+have armed the debug registers; otherwise it is retained and a cold reboot is
+required.
 
 ## Relocation-safe anchors
 
