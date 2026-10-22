@@ -120,12 +120,20 @@ For each run:
 3. Send the census ELF to elfldr and keep the sender connection open.
 4. Wait for the payload notification, let the console enter rest mode, then
    wake it normally.
-5. Wait for the completion notification before removing the USB drive.
+5. Wait for the completion notification before removing the USB drive. After
+   wake, the payload waits up to 30 seconds for the original pending marker to
+   reappear and follows it if the drive moves to a different `/mnt/usbN`.
 
 Before arming, the payload creates and fsyncs a unique, variant-labelled
-`pending` report. A successful run atomically writes and fsyncs
+`pending` report with a per-run token. A successful run atomically writes,
+fsyncs, and reads back
 `ps5-1160-regular-census.txt` or `ps5-1160-pro-census.txt` (or a numbered
-variant), then removes the marker. A failed AP/report validation writes a
+variant), then removes the marker. If the final report was verified but USB
+directory sync or pending-marker cleanup fails, the completion notification
+names that stage as a warning and leaves recovery evidence in place. A failure
+before final publication names the exact save stage and `errno`; any `.tmp`
+file is preserved for inspection rather than deleted. A failed AP/report
+validation writes a
 separate `.diagnostic` file and retains the pending marker. If the marker
 remains, report whether GameOS resumed and cold reboot before another attempt.
 Mapping, anchor, AP-page, TSS, and IDT preflight failures use a separate

@@ -21,6 +21,7 @@
 #include <sys/cpuset.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 int sceKernelGetCurrentCpu(void);
@@ -161,6 +162,38 @@ static uint64_t old_affinity[2];
 static int affinity_saved;
 static char pending_name[96], final_name[96], temp_name[96];
 
+enum report_save_result {
+  REPORT_SAVE_FAILED = -1,
+  REPORT_SAVE_SAVED = 0,
+  REPORT_SAVE_WARNING = 1,
+};
+
+enum report_save_stage {
+  REPORT_SAVE_STAGE_NONE = 0,
+  REPORT_SAVE_STAGE_FORMAT,
+  REPORT_SAVE_STAGE_REACQUIRE,
+  REPORT_SAVE_STAGE_DESTINATION_CHECK,
+  REPORT_SAVE_STAGE_TEMP_CHECK,
+  REPORT_SAVE_STAGE_TEMP_OPEN,
+  REPORT_SAVE_STAGE_TEMP_WRITE,
+  REPORT_SAVE_STAGE_TEMP_FSYNC,
+  REPORT_SAVE_STAGE_TEMP_CLOSE,
+  REPORT_SAVE_STAGE_RENAME,
+  REPORT_SAVE_STAGE_FINAL_STAT,
+  REPORT_SAVE_STAGE_FINAL_VERIFY,
+  REPORT_SAVE_STAGE_DIRECTORY_FSYNC,
+  REPORT_SAVE_STAGE_PENDING_UNLINK,
+  REPORT_SAVE_STAGE_PENDING_DIRECTORY_FSYNC,
+};
+
+struct report_save_status {
+  enum report_save_result result;
+  enum report_save_stage stage;
+  int error;
+  char root[128];
+  char destination[320];
+};
+
 struct ap_path_state {
   uint64_t address[4];
   uint64_t original[4];
@@ -284,12 +317,25 @@ static int write_all(int fd, const void *data, size_t size) {
   const uint8_t *p = data;
   while (size) {
     ssize_t n = write(fd, p, size);
-    if (n <= 0)
+    if (n < 0 && errno == EINTR)
+      continue;
+    if (n <= 0) {
+      if (!n)
+        errno = EIO;
       return -1;
+    }
     p += n;
     size -= (size_t)n;
   }
   return 0;
+}
+
+static int fsync_retry(int fd) {
+  int rc;
+  do {
+    rc = fsync(fd);
+  } while (rc && errno == EINTR);
+  return rc;
 }
 
 static int is_mount_point(const char *path) {
@@ -319,9 +365,162 @@ static int fsync_dir(const char *path) {
   const int fd = open(path, O_RDONLY);
   if (fd < 0)
     return -1;
-  const int rc = fsync(fd);
+  int saved_errno = 0;
+  if (fsync_retry(fd))
+    saved_errno = errno;
+  if (close(fd) && !saved_errno)
+    saved_errno = errno;
+  if (saved_errno) {
+    errno = saved_errno;
+    return -1;
+  }
+  return 0;
+}
+
+static const char *report_save_stage_name(enum report_save_stage stage) {
+  switch (stage) {
+  case REPORT_SAVE_STAGE_NONE:
+    return "none";
+  case REPORT_SAVE_STAGE_FORMAT:
+    return "format";
+  case REPORT_SAVE_STAGE_REACQUIRE:
+    return "USB-reacquire";
+  case REPORT_SAVE_STAGE_DESTINATION_CHECK:
+    return "destination-check";
+  case REPORT_SAVE_STAGE_TEMP_CHECK:
+    return "temporary-check";
+  case REPORT_SAVE_STAGE_TEMP_OPEN:
+    return "temporary-open";
+  case REPORT_SAVE_STAGE_TEMP_WRITE:
+    return "temporary-write";
+  case REPORT_SAVE_STAGE_TEMP_FSYNC:
+    return "temporary-fsync";
+  case REPORT_SAVE_STAGE_TEMP_CLOSE:
+    return "temporary-close";
+  case REPORT_SAVE_STAGE_RENAME:
+    return "final-rename";
+  case REPORT_SAVE_STAGE_FINAL_STAT:
+    return "final-stat";
+  case REPORT_SAVE_STAGE_FINAL_VERIFY:
+    return "final-verify";
+  case REPORT_SAVE_STAGE_DIRECTORY_FSYNC:
+    return "final-directory-fsync";
+  case REPORT_SAVE_STAGE_PENDING_UNLINK:
+    return "pending-unlink";
+  case REPORT_SAVE_STAGE_PENDING_DIRECTORY_FSYNC:
+    return "pending-directory-fsync";
+  }
+  return "unknown";
+}
+
+static enum report_save_result report_save_failed(
+    struct report_save_status *status, enum report_save_stage stage,
+    int error) {
+  status->result = REPORT_SAVE_FAILED;
+  status->stage = stage;
+  status->error = error ? error : EIO;
+  printf("USB report save failed at %s (errno %d)\n",
+         report_save_stage_name(stage), status->error);
+  return status->result;
+}
+
+static void report_save_warning(struct report_save_status *status,
+                                enum report_save_stage stage, int error) {
+  const int saved_error = error ? error : EIO;
+  printf("USB report save warning at %s (errno %d)\n",
+         report_save_stage_name(stage), saved_error);
+  if (status->result != REPORT_SAVE_WARNING) {
+    status->result = REPORT_SAVE_WARNING;
+    status->stage = stage;
+    status->error = saved_error;
+  }
+}
+
+/* Returns 1 for an exact match, 0 for an absent/different file, and -1 for
+ * an I/O error. */
+static int file_matches(const char *path, const void *expected,
+                        size_t expected_size) {
+  const uint8_t *want = expected;
+  size_t offset = 0;
+  ssize_t n;
+  int fd = open(path, O_RDONLY);
+  if (fd < 0)
+    return errno == ENOENT ? 0 : -1;
+
+  while (offset < expected_size) {
+    uint8_t buffer[256];
+    const size_t remaining = expected_size - offset;
+    const size_t chunk = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+    n = read(fd, buffer, chunk);
+    if (n < 0 && errno == EINTR)
+      continue;
+    if (n < 0) {
+      const int saved_errno = errno;
+      close(fd);
+      errno = saved_errno;
+      return -1;
+    }
+    if (!n || memcmp(buffer, want + offset, (size_t)n)) {
+      close(fd);
+      return 0;
+    }
+    offset += (size_t)n;
+  }
+
+  uint8_t extra;
+  do {
+    n = read(fd, &extra, sizeof(extra));
+  } while (n < 0 && errno == EINTR);
+  const int saved_errno = n < 0 ? errno : 0;
   const int close_rc = close(fd);
-  return rc || close_rc ? -1 : 0;
+  if (n < 0 || close_rc) {
+    errno = saved_errno ? saved_errno : errno;
+    return -1;
+  }
+  return n == 0 ? 1 : 0;
+}
+
+/* The USB mount can disappear or move from /mnt/usbN while the console is in
+ * rest mode.  Locate the exact pending marker rather than trusting the old
+ * mount number. */
+static int reacquire_pending_root(char *root, size_t root_size,
+                                  const void *marker, size_t marker_size) {
+  int last_error = ENOENT;
+
+  for (int attempt = 0; attempt < 30; attempt++) {
+    char match[128] = {0};
+    int matches = 0;
+    for (int usb = 0; usb < 8; usb++) {
+      char candidate_root[128], candidate_pending[256];
+      snprintf(candidate_root, sizeof(candidate_root), USB_ROOT_FMT, usb);
+      if (!is_mount_point(candidate_root))
+        continue;
+      snprintf(candidate_pending, sizeof(candidate_pending), "%s/%s",
+               candidate_root, pending_name);
+      const int match_rc =
+          file_matches(candidate_pending, marker, marker_size);
+      if (match_rc < 0) {
+        last_error = errno;
+        continue;
+      }
+      if (!match_rc)
+        continue;
+      matches++;
+      snprintf(match, sizeof(match), "%s", candidate_root);
+    }
+    if (matches == 1) {
+      snprintf(root, root_size, "%s", match);
+      return 0;
+    }
+    if (matches > 1) {
+      errno = EEXIST;
+      return -1;
+    }
+    if (attempt != 29)
+      sleep(1);
+  }
+  errno = last_error == ENOENT ? ETIMEDOUT : last_error;
+  return -1;
 }
 
 static int remove_pending(const char *root, const char *path) {
@@ -1489,7 +1688,7 @@ static int write_unique_diagnostic_at_root(
     }
     int rc = write_all(fd, text, size);
     if (!rc)
-      rc = fsync(fd);
+      rc = fsync_retry(fd);
     if (close(fd) && !rc)
       rc = -1;
     if (!rc && path_state(destination) != 0)
@@ -1646,14 +1845,18 @@ static int save_carrier_diagnostic(
                                          saved_path, saved_path_size);
 }
 
-static int save_report(const char *root, const char *model,
-                       const struct census_report *report,
-                       uint64_t map_pages, int rest_close_failed,
-                       int success, const struct ap_path_state *ap_path,
-                       int ap_restore_rc) {
+static enum report_save_result save_report(
+    const char *root_hint, const char *marker, size_t marker_size,
+    const char *model, const struct census_report *report, uint64_t map_pages,
+    int rest_close_failed, int success, const struct ap_path_state *ap_path,
+    int ap_restore_rc, struct report_save_status *status) {
+  char root[128];
   char pending[256], destination[320], temp[320];
   char text[8192];
   size_t used = 0;
+
+  memset(status, 0, sizeof(*status));
+  status->result = REPORT_SAVE_FAILED;
 
   used = appendf(text, sizeof(text), used,
                  "ps5-1160-census %llu\n"
@@ -1730,12 +1933,18 @@ static int save_report(const char *root, const char *model,
                    (unsigned long long)i,
                    (unsigned long long)report->candidate_pa[i]);
   if (used >= sizeof(text))
-    return -1;
+    return report_save_failed(status, REPORT_SAVE_STAGE_FORMAT, EOVERFLOW);
 
   printf("%s", text);
+  fflush(stdout);
+  printf("USB report: reacquiring pending marker %s (previously %s)\n",
+         pending_name, root_hint);
+  if (reacquire_pending_root(root, sizeof(root), marker, marker_size))
+    return report_save_failed(status, REPORT_SAVE_STAGE_REACQUIRE, errno);
+  snprintf(status->root, sizeof(status->root), "%s", root);
+  printf("USB report: pending marker found at %s\n", root);
+
   snprintf(pending, sizeof(pending), "%s/%s", root, pending_name);
-  if (path_state(pending) != 1)
-    return -1;
   if (success) {
     snprintf(destination, sizeof(destination), "%s/%s", root, final_name);
     snprintf(temp, sizeof(temp), "%s/%s", root, temp_name);
@@ -1745,23 +1954,74 @@ static int save_report(const char *root, const char *model,
     snprintf(temp, sizeof(temp), "%s/%s.diagnostic.tmp", root,
              pending_name);
   }
-  if (path_state(destination) != 0 || path_state(temp) != 0)
-    return -1;
+  snprintf(status->destination, sizeof(status->destination), "%s",
+           destination);
+
+  const int destination_state = path_state(destination);
+  if (destination_state != 0)
+    return report_save_failed(status, REPORT_SAVE_STAGE_DESTINATION_CHECK,
+                              destination_state > 0 ? EEXIST : errno);
+  const int temp_state = path_state(temp);
+  if (temp_state != 0)
+    return report_save_failed(status, REPORT_SAVE_STAGE_TEMP_CHECK,
+                              temp_state > 0 ? EEXIST : errno);
+
   int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (fd < 0)
-    return -1;
-  int rc = write_all(fd, text, used);
-  if (!rc)
-    rc = fsync(fd);
-  if (close(fd) && !rc)
-    rc = -1;
-  if (rc || rename(temp, destination) || fsync_dir(root)) {
-    unlink(temp);
-    return -1;
+    return report_save_failed(status, REPORT_SAVE_STAGE_TEMP_OPEN, errno);
+
+  if (write_all(fd, text, used)) {
+    const int saved_errno = errno;
+    close(fd);
+    printf("USB report: preserving recovery file %s\n", temp);
+    return report_save_failed(status, REPORT_SAVE_STAGE_TEMP_WRITE,
+                              saved_errno);
   }
-  if (success && (unlink(pending) || fsync_dir(root)))
-    return -1;
-  return 0;
+  if (fsync_retry(fd)) {
+    const int saved_errno = errno;
+    close(fd);
+    printf("USB report: preserving recovery file %s\n", temp);
+    return report_save_failed(status, REPORT_SAVE_STAGE_TEMP_FSYNC,
+                              saved_errno);
+  }
+  if (close(fd)) {
+    const int saved_errno = errno;
+    printf("USB report: preserving recovery file %s\n", temp);
+    return report_save_failed(status, REPORT_SAVE_STAGE_TEMP_CLOSE,
+                              saved_errno);
+  }
+  if (rename(temp, destination)) {
+    const int saved_errno = errno;
+    printf("USB report: preserving complete recovery file %s\n", temp);
+    return report_save_failed(status, REPORT_SAVE_STAGE_RENAME, saved_errno);
+  }
+
+  struct stat final_stat;
+  if (stat(destination, &final_stat))
+    return report_save_failed(status, REPORT_SAVE_STAGE_FINAL_STAT, errno);
+  if (!S_ISREG(final_stat.st_mode) || final_stat.st_size != (off_t)used)
+    return report_save_failed(status, REPORT_SAVE_STAGE_FINAL_STAT, EIO);
+  const int verify_rc = file_matches(destination, text, used);
+  if (verify_rc != 1)
+    return report_save_failed(status, REPORT_SAVE_STAGE_FINAL_VERIFY,
+                              verify_rc < 0 ? errno : EIO);
+
+  status->result = REPORT_SAVE_SAVED;
+  int final_directory_synced = 1;
+  if (fsync_dir(root)) {
+    final_directory_synced = 0;
+    report_save_warning(status, REPORT_SAVE_STAGE_DIRECTORY_FSYNC, errno);
+  }
+  if (success && final_directory_synced) {
+    if (unlink(pending)) {
+      report_save_warning(status, REPORT_SAVE_STAGE_PENDING_UNLINK, errno);
+    } else if (fsync_dir(root)) {
+      report_save_warning(status, REPORT_SAVE_STAGE_PENDING_DIRECTORY_FSYNC,
+                          errno);
+    }
+  }
+  printf("USB report: committed and verified at %s\n", destination);
+  return status->result;
 }
 
 static int report_candidates_valid(const struct census_report *report,
@@ -1873,6 +2133,14 @@ int main(void) {
                          : "private preflight diagnostic saved to USB");
     return 1;
   }
+  struct timeval run_time;
+  if (gettimeofday(&run_time, NULL)) {
+    notify("11.60 census refused: could not create a USB run token");
+    return 1;
+  }
+  const uint64_t run_token =
+      ((uint64_t)run_time.tv_sec << 20) ^ (uint64_t)run_time.tv_usec ^
+      ((uint64_t)(uint32_t)getpid() << 48);
   if (reserve_pending(usb_root, sizeof(usb_root), &pending_fd)) {
     notify("11.60 census refused: mount a writable USB drive");
     return 1;
@@ -1882,7 +2150,7 @@ int main(void) {
   int preflight_len = snprintf(
       preflight, sizeof(preflight),
       "ps5-1160-census pending\nvariant %s\nfirmware 0x%08x\nSoC 0x%x\n"
-      "model %s\n"
+      "model %s\nrun token %016llx\n"
       "HV base 0x%llx size 0x%llx\nscan offsets 0x%llx..0x%llx\n"
       "code base 0x%llx\nmapped pages %llu\n"
       "AP path levels %d original NX mask 0x%llx\n"
@@ -1890,7 +2158,7 @@ int main(void) {
       "report whether the console resumed and cold reboot before another "
       "census.\n",
       CENSUS_VARIANT, kernel_get_fw_version(), sceKernelGetMainSocId(),
-      model,
+      model, (unsigned long long)run_token,
       (unsigned long long)hv_base, (unsigned long long)hv_size,
       (unsigned long long)scan_lo, (unsigned long long)scan_hi,
       (unsigned long long)code_base, (unsigned long long)mapped_pages,
@@ -1900,7 +2168,7 @@ int main(void) {
           ? -1
           : write_all(pending_fd, preflight, (size_t)preflight_len);
   if (!pending_rc)
-    pending_rc = fsync(pending_fd);
+    pending_rc = fsync_retry(pending_fd);
   if (close(pending_fd) && !pending_rc)
     pending_rc = -1;
   pending_fd = -1;
@@ -2061,20 +2329,38 @@ int main(void) {
   const int success = report_valid && ap_state_cleared &&
                       live_ists_restored && live_gate_restored &&
                       !affinity_rc && !carrier_cleanup_rc && !ap_restore_rc;
-  const int save_rc = save_report(usb_root, model, &first, mapped_pages,
-                                  rest_close_failed, success, &ap_path,
-                                  ap_restore_rc);
+  struct report_save_status save_status;
+  const enum report_save_result save_rc = save_report(
+      usb_root, preflight, (size_t)preflight_len, model, &first, mapped_pages,
+      rest_close_failed, success, &ap_path, ap_restore_rc, &save_status);
 
   if (!success) {
-    notify("11.60 census failed validation; pending retained%s",
-           save_rc ? " and diagnostic save failed" : " with private diagnostic");
+    if (save_rc == REPORT_SAVE_FAILED)
+      notify("11.60 census failed validation; diagnostic USB save failed at "
+             "%s (errno %d); pending retained",
+             report_save_stage_name(save_status.stage), save_status.error);
+    else if (save_rc == REPORT_SAVE_WARNING)
+      notify("11.60 census failed validation; private diagnostic saved with "
+             "USB warning at %s (errno %d); pending retained",
+             report_save_stage_name(save_status.stage), save_status.error);
+    else
+      notify("11.60 census failed validation with private diagnostic; "
+             "pending retained");
     return 1;
   }
-  if (save_rc) {
-    notify("11.60 census complete, but final USB report save failed; cold "
-           "reboot required");
+  if (save_rc == REPORT_SAVE_FAILED) {
+    notify("11.60 census complete, but USB report save failed at %s "
+           "(errno %d); cold reboot required",
+           report_save_stage_name(save_status.stage), save_status.error);
     return 1;
   }
-  notify("11.60 census complete; report saved to USB. Cold reboot before reuse");
+  if (save_rc == REPORT_SAVE_WARNING) {
+    notify("11.60 census complete; report saved and verified, but USB "
+           "cleanup warned at %s (errno %d). Cold reboot before reuse",
+           report_save_stage_name(save_status.stage), save_status.error);
+    return 0;
+  }
+  notify("11.60 census complete; report saved and verified to USB. Cold "
+         "reboot before reuse");
   return 0;
 }
