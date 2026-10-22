@@ -46,6 +46,14 @@ candidate PAs selected by the production predicate. Both before and after
 hashes cover those same addresses in the same order and include only PA,
 `NESTED_CTRL`, and `CLEAN`, the identity plus fields production would mutate.
 
+The 11.60 startup-AP page is NX through the direct-map translation on observed
+hardware, including PS5 Pro. Report version 3 records that exact page-table
+path, creates and fsyncs the pending USB report, clears only the NX bits needed
+to run the AP immediately before requesting suspend, then restores and reads
+back every original entry after the AP returns. Any failed clear or restoration
+retains the pending marker and requires a cold reboot. The final report records
+the original NX mask and the restoration result.
+
 ## Relocation-safe anchors
 
 `B` is the variant-resolved HV image base: `B=R` for regular and
@@ -106,6 +114,9 @@ Before arming, the payload creates and fsyncs a unique, variant-labelled
 variant), then removes the marker. A failed AP/report validation writes a
 separate `.diagnostic` file and retains the pending marker. If the marker
 remains, report whether GameOS resumed and cold reboot before another attempt.
+Mapping, anchor, AP-page, TSS, and IDT preflight failures use a separate
+`*-preflight.txt` diagnostic and explicitly record `carrier armed 0`; those
+files are not pending markers.
 
 The report is bounded text and contains hashes and selected physical addresses,
 not raw HV bytes. It is private runtime evidence: do not attach it to a public
