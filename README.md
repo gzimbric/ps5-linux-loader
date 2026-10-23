@@ -25,7 +25,7 @@
 > closed if it does not match. This is not general upstream 11.xx support;
 > other revisions, repeatability, and multi-monitor coverage are unverified.
 > The controlled first-boot procedure and exact Ubuntu image are in the
-> [PS5 Pro 11.60 tester README](https://github.com/gzimbric/ps5-linux-loader/releases/download/firmware-11.60-pro-linux-test-1/PS5-PRO-11.60-TESTING.md).
+> [PS5 Pro 11.60 tester README](PS5_PRO_1160_TESTING.md).
 > See [PORTING_1160.md](PORTING_1160.md) for the exact build, evidence boundary,
 > and fail-closed hardware requirements.
 >

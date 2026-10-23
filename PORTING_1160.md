@@ -594,7 +594,7 @@ from the corrected tester prerelease rather than rebuilding either component.
 Its SHA-256 is
 `31625e04aaac83fffbf8b1b4f8c012114a0cc85336c6a4c8c6cd9bc9ef492f4b`.
 Follow the
-[PS5 Pro 11.60 tester README](https://github.com/gzimbric/ps5-linux-loader/releases/download/firmware-11.60-pro-linux-test-1/PS5-PRO-11.60-TESTING.md).
+[PS5 Pro 11.60 tester README](PS5_PRO_1160_TESTING.md).
 Attach Ethernet and add these temporary kernel arguments to `cmdline.txt` so
 the first milestone is authenticated SSH, not an unvalidated modeset or
 clock/fan policy:
