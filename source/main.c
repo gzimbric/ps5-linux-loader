@@ -13,7 +13,6 @@
 // files are staged, so it must not exit after that.
 static int fail_after_staging(void) {
   if (PS5_FW_IS_11XX(fw)) {
-  if (fw == 0x1160) {
     notify("Linux files are still staged. Cold reboot before trying again.\n");
     while (1)
       sleep(30);
@@ -53,7 +52,6 @@ int main(void) {
     if (hv_defeat_13xx(shellcode_kernel, shellcode_kernel_len))
       goto err;
   } else if (PS5_FW_IS_11XX(fw)) {
-  } else if (fw == 0x1160) {
     if (hv_defeat_1160(shellcode_kernel, shellcode_kernel_len))
       goto err;
   } else {

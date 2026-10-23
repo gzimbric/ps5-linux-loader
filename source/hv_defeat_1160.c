@@ -135,7 +135,6 @@ static int offsets_present(void) {
   /* Every 11.x build shares the same hypervisor image and CC cave. */
   if (env_offset.HV_CODE_CAVE_PA != 0x62806F00ULL ||
       env_offset.HV_HANDLE_VMEXIT_PA != 0x62847551ULL)
-  if (kernel_get_fw_version() != FW_1160_RAW || fw != 0x1160)
     return 0;
   if (env_offset.KERNEL_CODE_CAVE != 0xD2B000ULL ||
       env_offset.DATA_CAVE != 0x2D02000ULL)
