@@ -4,6 +4,10 @@
 #include "shellcode_kernel_args.h"
 
 #define PS5_FW_1160 0x1160U
+#define HV_VMEXIT_REGULAR_1160 UINT64_C(0x62847551)
+#define HV_CAVE_REGULAR_1160 UINT64_C(0x62806f00)
+#define HV_VMEXIT_PRO_1160 UINT64_C(0x8e0847540)
+#define HV_CAVE_PRO_1160 UINT64_C(0x8e0806ec0)
 
 static inline int shellcode_kernel_va_is_canonical(uint64_t va) {
   return va >= UINT64_C(0xffff800000000000);
@@ -45,8 +49,12 @@ static inline int validate_shellcode_kernel_args_1160(
       !shellcode_kernel_va_is_canonical(candidate->linux_info_va))
     return -1;
 
-  if (candidate->hv_handle_vmexit_pa == 0 ||
-      candidate->hv_code_cave_pa == 0 || candidate->linux_info_va == 0)
+  const int regular_hv =
+      candidate->hv_handle_vmexit_pa == HV_VMEXIT_REGULAR_1160 &&
+      candidate->hv_code_cave_pa == HV_CAVE_REGULAR_1160;
+  const int pro_hv = candidate->hv_handle_vmexit_pa == HV_VMEXIT_PRO_1160 &&
+                     candidate->hv_code_cave_pa == HV_CAVE_PRO_1160;
+  if ((!regular_hv && !pro_hv) || candidate->linux_info_va == 0)
     return -1;
 
   return 0;

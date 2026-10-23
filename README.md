@@ -2,13 +2,19 @@
 
 **ps5-linux** leverages patched HV vulnerabilities to transform your **PS5 Phat and Slim** console running **3.00-7.61 firmwares** into a highly capable Linux PC, unlocking its full hardware potential for desktop use. Powered by 8 CPU cores (16 threads) at **3.5 GHz** and a GPU at **2.23 GHz**, it provides enough performance to run Steam games and various emulators with impressive fluidity.
 
-> **Experimental firmware 11.60 support on this fork:** `main` contains the
-> source-only backport for an exact regular retail PS5 on raw
-> firmware `0x11600005`. One full Run 15 cycle produced physical HDMI output
-> and authenticated Linux over wired SSH. This is not general upstream 11.60
-> support; PS5 Pro, other 11.xx revisions, repeatability, and multi-monitor
-> coverage are unverified. See [PORTING_1160.md](PORTING_1160.md) for the exact
-> build, evidence boundary, and fail-closed hardware requirements.
+> **Experimental firmware 11.60 support on this fork:** `main` contains one
+> auto-detecting loader for regular retail PS5 and PS5 Pro consoles on the
+> exact raw firmware `0x11600005`. On a regular PS5, one full Run 15 cycle
+> produced physical HDMI output and authenticated Linux over wired SSH. The
+> Pro path has passed bounded on-device layout, anchor, target-count, and
+> cleanup validation, but its first complete Linux boot is still a controlled
+> hardware test. The same ELF deliberately skips the regular PS5's unverified
+> VBIOS/DP/MP3 display handoff on Pro, so the first Pro run is headless over
+> wired Ethernet. The loader requires the exact Pro boot metadata and fails
+> closed if it does not match. This is not general upstream 11.xx support;
+> other revisions, repeatability, and multi-monitor coverage are unverified.
+> See [PORTING_1160.md](PORTING_1160.md) for the exact build, evidence boundary,
+> and fail-closed hardware requirements.
 >
 > `main` also contains the opt-in build with upstream's 13.60 low-memory DMA
 > reservation. Run 18 booted it once with CachyOS and Run 19 once with the
@@ -213,11 +219,11 @@ If none of this helps, please report the issue in our [Discord server](https://d
 
 ### Firmware 11.60 CI builds
 
-On this fork, GitHub Actions builds all six 11.60 targets in one hosted macOS job on pushes to `main`, pull requests into `main`, and manual runs ([loader-1160.yml](.github/workflows/loader-1160.yml)): `make linux-1160`, `make linux-1160-dma-e820`, `make linux-1160-dma-e820-visible`, `make linux-1160-dma-e820-wifi`, `make linux-1160-dma-e820-bounded` and `make linux-1160-dma-e820-bounded-wifi`. The toolchain and SDK are installed once, but every target starts from `make clean` so build products cannot leak between configurations. Feature-branch and tag pushes do not start duplicate jobs; use the manual trigger when an older revision needs checking. Historical revisions that predate a target skip only that missing target. The Run 15, Run 18 DMA E820 and both bounded-loader tester-prerelease files are pinned. One combined workflow artifact contains all six ELFs, a top-level `SHA256SUMS`, and separate checksums and `build-info.txt` records for each target.
+On this fork, GitHub Actions builds all six 11.60 targets in one hosted macOS job on pushes to `main`, pull requests into `main`, and manual runs ([loader-1160.yml](.github/workflows/loader-1160.yml)): `make linux-1160`, `make linux-1160-dma-e820`, `make linux-1160-dma-e820-visible`, `make linux-1160-dma-e820-wifi`, `make linux-1160-dma-e820-bounded` and `make linux-1160-dma-e820-bounded-wifi`. The toolchain and SDK are installed once, but every target starts from `make clean` so build products cannot leak between configurations. Feature-branch and tag pushes do not start duplicate jobs; use the manual trigger when an older revision needs checking. Historical revisions that predate a target skip only that missing target. One combined workflow artifact contains all six universal regular/Pro ELFs, a top-level `SHA256SUMS`, and separate checksums and `build-info.txt` records for each target.
 
-These builds are for build checks and testers. They do not replace the release ELFs (Run 15 `422b87ec...`, Run 18 DMA E820 `2e1758a2...`, bounded `1c80b040...`, bounded Wi-Fi `e9fe6469...`). CI uses whatever Homebrew currently ships, so a file hash can differ when clang or lld records a different version in `.comment` and the build ID changes with it. To check the code itself, CI also hashes the ELF with those two sections removed and compares it to the release (`f9002988...` for Run 15, `6737e735...` for Run 18, `fdabc92c...` for bounded and `7b4588e3...` for bounded Wi-Fi). The run summary shows both hashes. Use the exact release ELF named by the applicable tester guide: Image 3 uses the bounded Wi-Fi ELF on IW620 hardware; the Image 4 tester prerelease uses the bounded Wi-Fi ELF for IW620 and the still-unbooted bounded non-Wi-Fi ELF for MediaTek.
+The older Run 15, Run 18, bounded, and bounded Wi-Fi hashes remain in the run summary as historical regular-console references. A universal ELF necessarily differs because it contains the Pro path, so those comparisons are informative rather than release gates. The semantic audit, exact mode checks, payload-size limits, relocation checks, and argument-pair tests are the current build gates. Use the exact ELF named by the applicable tester guide; do not substitute an untested CI artifact for a pinned hardware-tested release.
 
-CI does not run the `*-check` targets. The release check needs the private 11.60 ktext and HV dumps, and they are never uploaded. CI runs `tests/audit_1160_port.py` without them instead, which covers the structural checks but not the release hash pins.
+CI runs the same portable semantic audit used by the check targets without any private firmware or HV material. Authenticated local dumps can add provenance checks, but they are optional and are never uploaded. No private census output is part of the source tree or CI artifact.
 
 
 ## First Boot

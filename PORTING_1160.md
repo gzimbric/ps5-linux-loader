@@ -1,13 +1,15 @@
 # Firmware 11.60 Sonic-style Linux port
 
-This fork's `main` branch contains a dedicated `linux-1160` build. It preserves the public
-`ps5-linux-loader` flow and substitutes exact 11.60 inputs at the same seam
-used by Sonic's known-working 13.60 ELF:
+This fork's `main` branch contains a dedicated universal `linux-1160` build.
+One ELF auto-detects a regular retail PS5 or PS5 Pro and preserves the public
+`ps5-linux-loader` flow, substituting exact 11.60 inputs at the same seam used
+by Sonic's known-working 13.60 ELF:
 
 1. fetch `bzImage` and `initrd.img`;
 2. publish the public 0x98-byte wake argument block;
 3. map the position-independent wake blob at the existing fixed alias;
-4. use the hardware-proven 11.60 startup-AP carrier to disable nested paging;
+4. resolve the exact console-specific HV region and use the bounded 11.60
+   startup-AP carrier to disable nested paging;
 5. corrupt `AcpiGbl_FACS` so resume reaches the #GP/#SX copy-and-transfer
    chain;
 6. copy the wake blob into the verified 11.60 executable ktext cave;
@@ -25,27 +27,59 @@ table. No UART or per-operation return telemetry was available, so Run 15 does
 not identify the minimal display subset. Static, build, byte-provenance, and
 position-independence checks remain automated for the release configuration.
 
+The PS5 Pro path has a narrower evidence boundary. A bounded on-device census
+validated its exact boot metadata, HV geometry, three relocated code anchors,
+all 16 startup-AP targets, and restoration of temporary state. The universal
+loader implements that observed path with exact-value and cardinality gates.
+It has not yet completed a destructive Linux boot on Pro hardware, so the Pro
+path is a test candidate, not a hardware-proven release.
+
 ## Deliberate 11.60 substitutions
 
 - The raw firmware gate is exactly `0x11600005`; other revisions fail before
   setup or mutation.
-- The startup-AP payload is the byte-identical hardware-proven 11.60 donor:
-  1,158 bytes, SHA-256
-  `918ac3d8ccc16ec31e40fc069cf5ba46b168afd493acb12461adc8f96c7ee997`.
-- PS5 Pro is refused before setup because that donor's physical HV layout was
-  proven only on regular PS5 hardware.
+- The startup-AP payload is one position-independent 2,040-byte program,
+  SHA-256
+  `6d566791c53a8a02c1c0a944a5285f5f41f683d83f89183bf63c8ddb32718d5e`.
+  It accepts only the exact regular or Pro half-open scan-window pair, derives
+  the corresponding pointer aperture, and rejects unknown bounds before any HV
+  read or write.
+- The regular path keeps the literal region at `0x62800000`, with its original
+  scan window and pointer aperture unchanged. The Pro path is selected only
+  for the exact Pro SoC ID; TestKit, DevKit, and a failed SoC query are refused,
+  while other retail consoles retain the established regular path. Pro also
+  requires the bounded boot-metadata parser to find exactly one descriptor
+  with base `0x8e0000000` and size `0x2000000`. A missing, duplicate,
+  malformed, or mismatched descriptor refuses before carrier setup.
+- The startup-AP mutation predicate remains exact on both variants: one self
+  match, control value 9, ASID 1 through 15, aligned in-range structures,
+  exactly 16 targets including self, then a second full-set hash/revalidation,
+  per-write revalidation, and exactly 16 writes and 16 readbacks. A partial
+  commit attempts a bounded rollback to control value 9 and verifies it.
+- After resume, the wake blob independently requires the AP completion marker,
+  one self match, 16 unique in-window candidates, 16 writes and readbacks,
+  matching scan/revalidation hashes, and no rollback activity. A missing or
+  failed record enters a non-returning CPU hold before the CFI byte, VMEXIT
+  code, or Linux staging is changed; recover with a cold reboot. This is
+  required because the wake blob is entered by a one-way ROP `ret`, not a C
+  caller with a valid return address.
 - `AcpiGbl_FACS` is `ktext + 0x39cd1f0` and `memcpy` is
   `ktext + 0x2e7e40`.
 - Sonic's two resume pivots remain distinct. The startup #DB carrier uses
   `ktext + 0x2a0ede` (`add rsp,0x28; ret`), while the final #GP/#SX gates use
   the exact cross-firmware homolog `ktext + 0xa57354`
   (`add rsp,0x28; pop rbp; ret`) for their six-qword IST frames.
-- The VMEXIT transition stub uses Sonic's established physical HV padding at
-  `0x62806f00`. The local 11.60 HV dump proves the full
-  `[0x62806f00,0x62807000)` interval is `0xcc` padding. A live reverse walk
-  proves the page executable and identity-mapped before the CR3 switch;
-  post-switch coverage is guaranteed statically by the staged executable
-  1-GiB identity leaf.
+- The regular VMEXIT transition stub uses Sonic's established physical HV
+  padding at `0x62806f00`. The bounded Pro census measured its distinct
+  11.60 anchors at `0x8e0806ec0` for the code cave and `0x8e0847540` for the
+  VMEXIT patch. These are not assumed to be byte-for-byte relocations of the
+  regular offsets. The public wake argument validator accepts only the exact
+  regular address pair or the exact Pro pair; mixed and arbitrary pairs are
+  rejected.
+- The regular trampoline retains its nine-byte immediate jump. The Pro target
+  is above 4 GiB, so it uses a 12-byte `movabs`/`jmp` trampoline and installs
+  the required 1-GiB identity leaf at index `0x23`. Physical-address helpers
+  retain the full 64-bit address instead of truncating it to 32 bits.
 - The wake destination is the live-tested executable NOP range
   `[ktext+0xd2b000, ktext+0xd30000)`. The dedicated wake blob must remain at
   or below `0x5000` bytes.
@@ -76,38 +110,46 @@ position-independence checks remain automated for the release configuration.
   MP3 buffer clear; diagnostic builds can explicitly set
   `PS5_1160_DIAG_CLEAR_MP3_BUFFERS=1` only to reproduce the failing Run 13
   write pattern. Legacy firmware builds retain their original clear.
-- Sonic's inner-HV UART-enable operation and reserved E820 range
-  `[0x980000000, 0xa00000000)` are retained.
+- Sonic's inner-HV UART-enable operation and the existing regular-console E820
+  maps are retained.
+- The Pro path uses its own ACPI RSDP at `0x7fd8e000` and a fail-closed E820
+  map. It exposes `0x470000000..0x47f300000` as high RAM, reserves
+  `0x47f300000..0x8e0000000`, reserves the HV region
+  `0x8e0000000..0x8e2000000`, and reserves
+  `0x8e2000000..0x900000000`. It deliberately does not expose the unverified
+  high apertures as RAM.
+- One universal wake blob keeps the proven VBIOS/DP/MP3 handoff and 29 display
+  operations on a regular PS5. When the validated Pro HV address pair is
+  selected, it skips those regular-only calls and continues with kernel/initrd
+  staging and the Linux transition for a wired, headless first boot.
 
 ## Build and audit
 
-The PS5 payload SDK, an x86-64 ELF cross-toolchain, and the authenticated 11.60
-kernel-text and extended-HV dumps are required for the release check. The
-top-level Makefile now defaults to the exact hardware-tested Run 15 gates:
-`PS5_1160_DIAGNOSTIC=1`, `PRE=5`, `OP=29`, and clear disabled. On the macOS
-toolchain used for the release:
+The PS5 payload SDK and an x86-64 ELF cross-toolchain are required. The
+top-level Makefile defaults to the hardware-tested regular-console diagnostic
+gates: `PS5_1160_DIAGNOSTIC=1`, `PRE=5`, `OP=29`, and clear disabled. On
+macOS:
 
 ```sh
 PATH=/opt/homebrew/opt/llvm/bin:$PATH \
-PS5_1160_KTEXT_DUMP=/absolute/path/to/ps5-11.60-ktext.bin \
-PS5_1160_HV_DUMP=/absolute/path/to/ps5-11.60-hv-extended-62800000.bin \
 make linux-1160-check \
   PS5_PAYLOAD_SDK=/absolute/path/to/ps5-payload-sdk
 ```
 
-The output is `bin/ps5-linux-loader-1160.elf`. The release check pins all
-three generated identities to the hardware-tested Run 15 artifacts:
+The output is `bin/ps5-linux-loader-1160.elf`. The check is semantic: it
+validates the exact regular and Pro selection gates, startup-AP predicates,
+public wake ABI, exact accepted address pairs, 64-bit physical translation,
+regular and Pro trampoline encodings, identity mapping, E820/ACPI selection,
+display sequence, relocation freedom, and all payload-size limits. Supplying
+authenticated local ktext and HV dumps through `PS5_1160_KTEXT_DUMP` and
+`PS5_1160_HV_DUMP` adds the existing byte-provenance checks, but those files
+are optional and must remain private.
 
-- outer ELF: `422b87ec39ca0edfce8dddd609c2eff1cc7adcb2732b7909b76fafbd60dd2336`;
-- wake blob: `83756ca9eddffbcf075cb3660ec80755263ce147793922a54414b57c15d11319`;
-- wake ELF: `19c9e7fc396520bad8e49f8f4c97ffe10830d494a2fe9346d6d944ff6f09ac3a`.
-
-The source list is sorted in byte order, so these hashes do not depend on the
-shell locale (`LANG=en_US.UTF-8` used to change the link order).
-
-Changing a diagnostic gate changes a tracked build stamp and forces the wake
-blob and outer payload to rebuild. Such builds remain useful for controlled
-experiments, but `linux-1160-check` rejects them as release artifacts.
+The old Run 15 and later regular-console hashes remain historical provenance,
+not gates for the universal build. Adding the Pro code path necessarily
+changes the wake blob and outer ELF. The source list remains sorted in byte
+order for reproducible link order, and changing a diagnostic gate still
+changes the tracked build stamp and forces the nested payloads to rebuild.
 
 The 13.60 support from upstream (8cda4c1) also changes the stock 13.60 inner
 HV so Linux only gets `[0x00100000, 0x01000000)` as low RAM and sees
@@ -151,8 +193,8 @@ release. Check its SHA-256 against the value above before sending it. The
 in the porting repo covers the Ubuntu 24.04 image, the boot steps and what to
 report.
 
-`make linux-1160-dma-e820-visible` (or `linux-1160-dma-e820-visible-check`
-with the same dumps) builds the DMA E820 map into
+`make linux-1160-dma-e820-visible` (or `linux-1160-dma-e820-visible-check`)
+builds the DMA E820 map into
 `bin/ps5-linux-loader-1160-dma-e820-visible.elf`. It differs from the DMA
 build only in the two size refusals in `fetch_linux`. When `bzImage` or
 `initrd.img` is not the validated size, it shows a notification with the file
@@ -164,8 +206,8 @@ which is not pinned. Setting `PS5_1160_VISIBLE_REFUSALS` on the command line
 is refused, and the target cannot share a `make` run with `linux-1160`. This
 build has not been booted on hardware.
 
-`make linux-1160-dma-e820-wifi` (or `linux-1160-dma-e820-wifi-check` with the
-same dumps) builds `bin/ps5-linux-loader-1160-dma-e820-wifi.elf`: the visible
+`make linux-1160-dma-e820-wifi` (or `linux-1160-dma-e820-wifi-check`) builds
+`bin/ps5-linux-loader-1160-dma-e820-wifi.elf`: the visible
 build plus the 11.60 IW620 Wi-Fi firmware range in the offset table. The range
 is the one returned by the native 11.60 firmware helper at
 `ktext + 0x4ecfd0`: `ktext + 0x1585d90`, length `0x799bc` (498,108 bytes).
@@ -183,13 +225,15 @@ console at boot and is not in this repository or any release.
 The loader release contains no firmware blob. Do not redistribute the runtime
 dump at `lib/nxp/pcieuartiw620_combo_v1.bin`; it came from the individual
 console and is not a release artifact.
+The Pro path never reads or writes this regular-console IW620 range, even when
+using a Wi-Fi-named universal ELF; its runtime firmware dump is skipped.
 `PS5_1160_WIFI_FW` is passed only to this target's objects, so no other build
 can pick it up. The check prints the hash, which is not pinned. This build has
 not been booted on hardware. The bounded Wi-Fi build below has the same range
 and ran the dump in Run 21.
 
 `make linux-1160-dma-e820-bounded` and `make linux-1160-dma-e820-bounded-wifi`
-(and their `-check` targets, with the same dumps) build
+(and their `-check` targets) build
 `bin/ps5-linux-loader-1160-dma-e820-bounded.elf` and
 `bin/ps5-linux-loader-1160-dma-e820-bounded-wifi.elf`, for kernels and initrds
 other than the Run 15 pair. They are the visible and Wi-Fi builds with the two
@@ -280,10 +324,10 @@ KASLR message offset of the Run 15 7.1.7 and CachyOS 7.3 bzImages. That is
 what CI runs; the kernels are not in the repository.
 `PS5_1160_TEST_BZIMAGE=/path/to/bzImage` runs the same checks on real files
 and, for those two, checks that the fields still match. Setting
-`PS5_1160_BOUNDED_BOOT_FILES` on the command line is refused. `linux-1160`,
-`linux-1160-dma-e820`, `linux-1160-dma-e820-visible` and
-`linux-1160-dma-e820-wifi` stay byte-identical (`422b87ec`, `2e1758a2`,
-`681b22ea`, `3cda033e`). The public
+`PS5_1160_BOUNDED_BOOT_FILES` on the command line is refused. The earlier
+regular-console releases remain pinned as historical hardware evidence; the
+universal regular/Pro builds on current `main` are expected to have different
+ELF and code hashes. The public
 [`firmware-11.60-dma-e820-bounded-run21` tester prerelease](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-dma-e820-bounded-run21)
 pins both bounded files. The bounded ELF is `1c80b040c5a808b3f09418728424a875d5598fe6b2a5d68adeb4db5979a7541a`
 (`fdabc92c7f7373e2805c66e8614d36703d63e1df67c32b4230bf8f6168651724`
@@ -308,10 +352,10 @@ bytes). This is the first time a loader dumped the IW620 firmware on 11.60,
 and the file on the boot drive has the hash given above. See the hardware
 validation status below.
 
-Current `main` keeps that ELF byte-identical and adds fail-closed mode checks
-for direct file targets plus CI coverage for all six 11.60 variants. The
-historical `firmware-11.60-dma-e820` branch remains only as provenance for the
-Run 18 through Run 21 commits.
+Current `main` keeps the same regular runtime behavior and adds the gated Pro
+path, fail-closed mode checks for direct file targets, and CI coverage for all
+six 11.60 variants. The historical `firmware-11.60-dma-e820` branch and its
+release ELFs remain provenance for the Run 18 through Run 21 hardware results.
 
 The bounded tester prerelease is for exact retail firmware 11.60 only.
 [CachyOS Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-3),
@@ -338,7 +382,13 @@ for its exact artifact identity, evidence and clean-flash requirements.
 
 `linux-1160-check` fails unless all of the following hold:
 
-- the exact startup-AP donor hash and size match;
+- the universal startup-AP blob is exactly 2,040 bytes with SHA-256
+  `6d566791c53a8a02c1c0a944a5285f5f41f683d83f89183bf63c8ddb32718d5e`;
+- the regular literal region and Pro metadata resolver select only their exact
+  half-open scan windows, and unknown or ambiguous regions fail before an HV
+  access;
+- the one-self, exact-16-target, dynamic-set revalidation, exact-16-write,
+  exact-16-readback, and bounded-rollback startup predicates remain intact;
 - the wake blob fits the five-page 11.60 cave;
 - the wake and inner-HV raw payload ELFs are PIE (`ET_DYN`) with no relocation
   entries or linked-VMA immediates;
@@ -352,14 +402,19 @@ for its exact artifact identity, evidence and clean-flash requirements.
 - every unique 11.60 HDMI target matches its authenticated ktext hash;
 - the startup #DB and final #GP/#SX pivots are both present, distinct, and used
   only at their Sonic-matching exception sites;
-- the VMEXIT transition targets `0x62806f00`, not the unusable `0x6284ac20`
-  address used by the failed run-6 candidate. The latter's low VA is absent
-  under the active runtime host CR3 and is present-but-NX only under the
-  inactive bootstrap tables;
+- the VMEXIT transition targets the exact regular or Pro cave, rejects mixed
+  address pairs, retains the regular immediate trampoline, and uses the
+  64-bit Pro trampoline plus its high identity leaf;
+- the regular VMEXIT transition still targets `0x62806f00`, not the unusable
+  `0x6284ac20` address used by the failed run-6 candidate. The latter's low VA
+  is absent under the active runtime host CR3 and is present-but-NX only under
+  the inactive bootstrap tables;
+- the correct variant-specific E820 map and ACPI RSDP are encoded, including
+  the conservative reserved high apertures on Pro;
 - Sonic's two required inner-HV deltas are encoded;
-- the final payload contains exactly one wake blob and one AP donor blob.
+- the final payload contains exactly one wake blob and one startup-AP blob.
 
-The integration also fails closed unless the boot media contains the
+The non-bounded targets also fail closed unless the boot media contains the
 audited 12,702,720-byte `bzImage` and the final 54,376,639-byte `initrd.img`.
 
 ## Hardware validation status
@@ -377,8 +432,8 @@ The exact tested Run 15 source was local commit
 to published commit `e0b7a2e9ac1fe6ec8de8f1883ba9470ad7ee690d` on branch
 `firmware-11.60-sonic-display`; both resolve to tree
 `97e96d7d6fbec038812e0a1f9919b1d7c91a9410`. A fresh published-tree build
-with the release configuration and authenticated dumps reproduced all three
-Run 15 hashes above.
+with the release configuration and authenticated dumps reproduced the three
+hashes recorded with the historical Run 15 release.
 
 Run 18 booted the DMA E820 build once on the same console, from cold boot,
 with automatic Rest Mode and wake. The USB was a CachyOS image built from the
@@ -516,10 +571,31 @@ unknown.
 
 ## Hardware test boundary
 
-Use only on an exact retail 11.60 regular PS5, with the same USB Linux files
-and rest-mode procedure documented by upstream. This release mutates
-IDT/TSS/FACS state and the hypervisor path. If it refuses because carrier state
-is stale, cold reboot; do not retry it in the same GameOS boot.
+Use only on an exact retail regular PS5 or PS5 Pro running raw firmware
+`0x11600005`, with the same USB Linux files and rest-mode procedure documented
+by upstream. The same ELF detects the console variant; do not patch its
+addresses or substitute a build for another firmware revision. This loader
+mutates IDT/TSS/FACS state and the hypervisor path. If it refuses because
+carrier state is stale, cold reboot; do not retry it in the same GameOS boot.
+
+The regular path has completed the full Linux boot. The Pro path has completed
+only the bounded, restoring census described above. Its first loader run must
+therefore be treated as a controlled destructive hardware test with a cold
+reboot available. A successful build, carrier arm, Rest Mode transition, white
+light, ping, or DRM connector state alone does not establish a Pro Linux boot.
+
+For that first Pro run, use the exact published Ubuntu 24.04 Image 2 rather
+than rebuilding the root filesystem. Attach Ethernet and add these temporary
+kernel arguments to `cmdline.txt` so the first milestone is authenticated SSH,
+not an unvalidated modeset or clock/fan policy:
+
+```text
+systemd.unit=multi-user.target systemd.mask=ps5-performance.service systemd.mask=ps5fan.service modprobe.blacklist=amdgpu,ps5_gpufreq,ps5_cpufreq module_blacklist=amdgpu,ps5_gpufreq,ps5_cpufreq
+```
+
+This is a first-boot containment profile, not a claim that those devices are
+unsupported. Remove one gate at a time only after the headless baseline is
+captured.
 
 UART is optional. Authenticate Linux over wired SSH independently of monitor
 state; a white light, ping, DRM connector state, or modeset return alone is not

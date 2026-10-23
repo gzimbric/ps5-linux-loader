@@ -217,6 +217,16 @@ void trim_newline(char *s) {
 int fetch_linux(struct linux_info *info) {
   char bzimage_path[256];
   char initrd_path[256];
+  const enum kit_type detected_kit = get_kit_type();
+
+#if FW_1160_PORT
+  if (detected_kit != KIT_RETAIL && detected_kit != KIT_RETAIL_PRO) {
+    notify("11.60 loader refused: console variant is not a supported retail "
+           "model\n");
+    fflush(stdout);
+    return -1;
+  }
+#endif
 
   long bzimage_file_size = find_and_get_size_of_file("bzImage", bzimage_path);
   if (bzimage_file_size < 0) {
@@ -413,7 +423,10 @@ int fetch_linux(struct linux_info *info) {
 #endif
 
 #if !PS5_1160_BOUNDED_BOOT_FILES
-  if (dump_device_firmwares(initrd_path) < 0) {
+  if (detected_kit == KIT_RETAIL_PRO) {
+    printf("11.60 Pro: skipping regular-model IW620 firmware dump\n");
+    fflush(stdout);
+  } else if (dump_device_firmwares(initrd_path) < 0) {
     notify(
         "Something went wrong while dumping device firmwares - Continuing\n");
   }
@@ -493,7 +506,10 @@ int fetch_linux(struct linux_info *info) {
 
   /* Write the Wi-Fi firmware to the boot drive only once every boot file
    * refusal has passed. */
-  if (dump_device_firmwares(initrd_path) < 0) {
+  if (detected_kit == KIT_RETAIL_PRO) {
+    printf("11.60 Pro: skipping regular-model IW620 firmware dump\n");
+    fflush(stdout);
+  } else if (dump_device_firmwares(initrd_path) < 0) {
     notify(
         "Something went wrong while dumping device firmwares - Continuing\n");
   }
@@ -505,7 +521,7 @@ int fetch_linux(struct linux_info *info) {
   info->initrd = kernel_cave_bzImage + ALIGN_UP(bzimage_size, PAGE_SIZE);
   info->initrd_size = initrd_size;
   info->vram_size = vram_size;
-  info->kit_type = (int)get_kit_type();
+  info->kit_type = (int)detected_kit;
   strcpy(info->cmdline, cmdline);
 
 #if FW_1160_PORT

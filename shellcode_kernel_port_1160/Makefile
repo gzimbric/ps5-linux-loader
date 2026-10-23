@@ -50,11 +50,13 @@ $(OBJ): $(BUILD_CONFIG)
 
 main.o: ../shellcode_kernel/main.c ../shellcode_kernel/main.h \
 	../shellcode_kernel/shellcode_kernel_args_validate.h \
+	../shellcode_kernel/resume_result_1160_validate.h \
 	../shellcode_kernel/display_ops_1160.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 boot_linux.o: ../shellcode_kernel/boot_linux.c \
 	../shellcode_kernel/boot_linux.h ../shellcode_kernel/utils.h \
+	../shellcode_kernel/shellcode_kernel_args_validate.h \
 	../include/config.h ../include/linux.h \
 	../shellcode_hv_port_1160/shellcode_hv_port_1160.h
 	$(CC) $(CFLAGS) -c $< -o $@

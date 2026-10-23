@@ -2,12 +2,13 @@ CC      = x86_64-elf-gcc
 LD      = x86_64-elf-ld
 OBJCOPY = x86_64-elf-objcopy
 
-CFLAGS := -O2 -ffreestanding -nostdlib -fno-pic -fno-plt \
+CFLAGS := -Os -ffreestanding -nostdlib -fno-pic -fno-plt \
 	-fno-stack-protector -fno-stack-clash-protection -fomit-frame-pointer \
 	-fno-asynchronous-unwind-tables -fcf-protection=none -fno-jump-tables \
 	-mgeneral-regs-only -mno-red-zone -Wall -Wextra
 
-EXPECTED_SHA256 := 918ac3d8ccc16ec31e40fc069cf5ba46b168afd493acb12461adc8f96c7ee997
+EXPECTED_SIZE := 2040
+EXPECTED_SHA256 := 6d566791c53a8a02c1c0a944a5285f5f41f683d83f89183bf63c8ddb32718d5e
 DUMP := break_hv.h
 
 .PHONY: all check clean
@@ -30,7 +31,7 @@ $(DUMP): break_hv.bin
 	xxd -i -n break_hv break_hv.bin > $@
 
 check: break_hv.bin $(DUMP)
-	@test "$$(wc -c < break_hv.bin | tr -d ' ')" -eq 1158
+	@test "$$(wc -c < break_hv.bin | tr -d ' ')" -eq "$(EXPECTED_SIZE)"
 	@test "$$(shasum -a 256 break_hv.bin | awk '{print $$1}')" = \
 		"$(EXPECTED_SHA256)"
 

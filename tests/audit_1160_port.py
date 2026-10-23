@@ -23,7 +23,11 @@ STAGING = ROOT / "source/loader_staging_1160.c"
 HV_DEFEAT = ROOT / "source/hv_defeat_1160.c"
 PREPARE_RESUME = ROOT / "source/prepare_resume.c"
 BOOT_LINUX = ROOT / "shellcode_kernel/boot_linux.c"
+AP_SOURCE = ROOT / "shellcode_break_hv/break_hv.c"
+ARGS_VALIDATE = ROOT / "shellcode_kernel/shellcode_kernel_args_validate.h"
+RESUME_RESULT_VALIDATE = ROOT / "shellcode_kernel/resume_result_1160_validate.h"
 CONFIG = ROOT / "include/config.h"
+UTILS_SOURCE = ROOT / "source/utils.c"
 WAKE_MAKEFILE = ROOT / "shellcode_kernel_port_1160/Makefile"
 WAKE_MAIN = ROOT / "shellcode_kernel/main.c"
 INNER_HV_BOOT_LINUX = ROOT / "shellcode_hv/boot_linux.c"
@@ -32,22 +36,9 @@ INNER_HV_MAIN = ROOT / "shellcode_hv/main.c"
 WAKE_UTILS = ROOT / "shellcode_kernel/utils.c"
 BOOT_FILES = ROOT / "include/boot_files_1160.h"
 
-RUN15_ELF_SHA256 = (
-    "422b87ec39ca0edfce8dddd609c2eff1cc7adcb2732b7909b76fafbd60dd2336"
-)
-RUN15_WAKE_SHA256 = (
-    "83756ca9eddffbcf075cb3660ec80755263ce147793922a54414b57c15d11319"
-)
-RUN15_WAKE_ELF_SHA256 = (
-    "19c9e7fc396520bad8e49f8f4c97ffe10830d494a2fe9346d6d944ff6f09ac3a"
-)
-
 diag_mode_text = os.environ.get("PS5_1160_DIAGNOSTIC")
 assert diag_mode_text in (None, "0", "1")
 diagnostic_build = diag_mode_text == "1"
-release_check_text = os.environ.get("PS5_1160_RELEASE_CHECK")
-assert release_check_text in (None, "0", "1")
-release_check = release_check_text == "1"
 dma_e820_safe_text = os.environ.get("PS5_1160_DMA_E820_SAFE", "0")
 assert dma_e820_safe_text in ("0", "1")
 dma_e820_safe = dma_e820_safe_text == "1"
@@ -153,23 +144,28 @@ def assert_raw_blob_is_pic(path: Path, raw_path: Path) -> None:
     main = re.search(r"^([0-9a-f]+)\s+T\s+main$", symbols, re.MULTILINE)
     assert main and int(main.group(1), 16) == start, path
 
-    # Catch the exact regression that originally left raw linked VMAs such as
-    # `mov rbx,0x2c60` in a blob later copied somewhere else.  The one
-    # legitimate in-range scalar is the exact firmware number used by the wake
-    # validator.  Every symbolized PC-relative target must remain inside the
-    # section that objcopy extracts.
+    # Catch the exact regression that originally left raw linked pointers such
+    # as `mov rbx,0x2c60` in a blob later copied somewhere else.  Pointer
+    # materialization uses a 64-bit destination; do not classify every 32-bit
+    # scalar that happens to fall in the linked VMA as an address.  In
+    # particular, the compiler constructs the Pro scan limit from a compact
+    # 32-bit value followed by a left shift.  Absolute memory operands remain
+    # forbidden, and every symbolized PC-relative target must remain inside
+    # the section that objcopy extracts.
     disassembly = tool_output("x86_64-elf-objdump", "-d", "-Mintel", path)
     bad = []
     for line in disassembly.splitlines():
         instruction = line.split("#", 1)[0]
         immediate = re.search(
-            r"\bmov(?:abs)?\s+[^,]+,0x([0-9a-f]+)\b", instruction
+            r"\bmov(?:abs)?\s+(?:r(?:ax|bx|cx|dx|si|di|bp|sp|[89]|1[0-5])),"
+            r"0x([0-9a-f]+)\b",
+            instruction,
         )
         absolute_memory = re.search(r"\[(?:ds:)?0x([0-9a-f]+)\]", instruction)
         for candidate in (immediate, absolute_memory):
             if candidate:
                 value = int(candidate.group(1), 16)
-                if start <= value < end and value != 0x1160:
+                if start <= value < end:
                     bad.append(line.strip())
 
         for target in re.finditer(r"(?:#\s*)?([0-9a-f]+)\s+<[^>]+>", line):
@@ -184,22 +180,6 @@ wake = WAKE.read_bytes()
 inner_hv = INNER_HV.read_bytes()
 ap = AP.read_bytes()
 
-if release_check:
-    assert diagnostic_build, "release check requires PS5_1160_DIAGNOSTIC=1"
-    assert not dma_e820_safe, "Run 15 release check requires the original E820 map"
-    assert not visible_refusals, "Run 15 release check requires printf-only refusals"
-    assert not wifi_fw_enabled, "Run 15 release check has no Wi-Fi firmware range"
-    assert not bounded, "Run 15 release check requires the exact Run 15 sizes"
-    assert (diag_pre_stage, diag_op_limit, diag_clear_mp3_buffers) == (5, 29, 0), (
-        "release check requires the hardware-tested Run 15 gates",
-        diag_pre_stage,
-        diag_op_limit,
-        diag_clear_mp3_buffers,
-    )
-    assert hashlib.sha256(elf).hexdigest() == RUN15_ELF_SHA256
-    assert hashlib.sha256(wake).hexdigest() == RUN15_WAKE_SHA256
-    assert hashlib.sha256(WAKE_ELF.read_bytes()).hexdigest() == RUN15_WAKE_ELF_SHA256
-
 assert_raw_blob_is_pic(WAKE_ELF, WAKE)
 assert_raw_blob_is_pic(INNER_HV_ELF, INNER_HV)
 
@@ -210,7 +190,7 @@ assert wake.count(inner_hv) == 1
 assert elf.count(wake) == 1
 assert elf.count(ap) == 1
 assert hashlib.sha256(ap).hexdigest() == (
-    "918ac3d8ccc16ec31e40fc069cf5ba46b168afd493acb12461adc8f96c7ee997"
+    "6d566791c53a8a02c1c0a944a5285f5f41f683d83f89183bf63c8ddb32718d5e"
 )
 
 # Validate the fields in the actual off_1160 object. Whole-ELF byte counts are
@@ -302,8 +282,12 @@ for value in (0x39C9490, 0x2590B0, 0xCB92C0):
     assert u32(value) not in elf, hex(value)
 
 assert elf.count(u32(0x11600005)) >= 2
-assert elf.count(u32(0x840FD0)) >= 2
-assert b"PS5 Pro HV layout is not validated" in elf
+assert elf.count(u32(0x840FD0)) >= 1
+assert b"PS5 Pro HV layout is not validated" not in elf
+assert b"PS5 Pro detected" in elf
+assert b"11.60 Pro HV metadata did not match; refusing to arm" in elf
+assert u64(0x8E0806EC0) in elf
+assert u64(0x8E0847540) in elf
 
 # The dedicated build must use the live-tested Stage-1A/1B checked alias
 # transaction rather than entering the upstream unchecked helper from
@@ -383,9 +367,116 @@ loader_source = LOADER.read_text()
 staging_source = STAGING.read_text()
 hv_defeat_source = HV_DEFEAT.read_text()
 boot_linux_source = BOOT_LINUX.read_text()
+ap_source = AP_SOURCE.read_text()
+args_validate_source = ARGS_VALIDATE.read_text()
+resume_result_validate_source = RESUME_RESULT_VALIDATE.read_text()
 config_source = CONFIG.read_text()
+utils_source = UTILS_SOURCE.read_text()
 wake_makefile = WAKE_MAKEFILE.read_text()
 wake_main_source = WAKE_MAIN.read_text()
+
+# Pro support is one auto-detected 11.60 path.  Its outer preflight accepts
+# only the census-proven EFI aperture; its AP accepts only the two exact
+# layouts and reaches no HV write until identity/cardinality checks pass.
+for required in (
+    "OFF_BOOT_METADATA_1160 0x3e10000ULL",
+    "candidate_base == HV_REGION_BASE_PRO",
+    "candidate_size == HV_REGION_SIZE_PRO",
+    "candidates == 1",
+    "STORE_PARAM(0xf18, scan_lo)",
+    "STORE_PARAM(0xf40, scan_hi)",
+    "preflight_scan_range_1160(scan_lo, scan_hi)",
+    "stock_db_handler >= ktext + KTEXT_1160_END",
+    "build_bounded_iret(fallback, va)",
+    "uint64_t frame = stack_va + IRET_OFF",
+    "uint64_t iret = kg(env_offset.GAD_IRETQ)",
+    "CAVE_FALLBACKS_OFF + FALLBACK_COUNT * FALLBACK_SIZE <=",
+    "FRAME_OFF + 5 * sizeof(uint64_t) == STACK_TOP_OFF",
+    "validate_pro_hv_region_1160()",
+    "linux_i.kit_type == KIT_RETAIL_PRO",
+):
+    assert required in hv_defeat_source, required
+fallback_source = hv_defeat_source.split(
+    "static int build_bounded_iret", 1
+)[1].split("static int build_arm", 1)[0]
+assert "stock_db_handler" not in fallback_source
+assert "FALLBACK_SIZE" in fallback_source
+assert "chain_q(stack, &off, FALLBACK_SIZE, frame)" in fallback_source
+assert "sceKernelGetMainSocId()" not in hv_defeat_source
+assert "rsp0[cpu] == rsp0[prior]" not in hv_defeat_source
+assert "ist4[cpu] == ist4[prior]" in hv_defeat_source
+for required in (
+    "oracle[3] != RESUME_MARK_DONE_1160",
+    "ext[2] != 1",
+    "ext[3] != RESUME_TARGETS_1160",
+    "ext[8] != RESUME_TARGETS_1160",
+    "ext[9] != RESUME_TARGETS_1160",
+    "ext[26] != 0 || ext[27] != 0",
+    "ext[28] != ext[29]",
+    "candidate == ext[10 + prior]",
+    "self_matches == 1",
+):
+    assert required in resume_result_validate_source, required
+assert "validate_resume_result_1160(args.ktext" in wake_main_source
+assert wake_main_source.index("validate_resume_result_1160(args.ktext") < (
+    wake_main_source.index("*(uint8_t *)args_ptr->kernel_cfi_check = 0xC3")
+)
+assert '__asm__ volatile("cli; hlt" ::: "memory")' in wake_main_source
+assert wake_main_source.count("hold_for_cold_reboot_1160();") == 3
+assert wake.count(bytes.fromhex("faf4")) >= 1
+for required in (
+    "REGULAR_SCAN_LO 0x062a00000ULL",
+    "REGULAR_SCAN_HI 0x063800000ULL",
+    "PRO_SCAN_LO     0x8e0a00000ULL",
+    "PRO_SCAN_HI     0x8e1800000ULL",
+    "pointer_bounds(scan_lo, scan_hi, &region_lo, &region_hi)",
+    "candidates[recorded] = pa",
+    "targets != TARGET_COUNT || recorded != TARGET_COUNT",
+    "written != TARGET_COUNT || verified != TARGET_COUNT",
+    "rollback_candidates(dmap, self_asid, scan_lo, scan_hi",
+    "ext[EXT_HASH_BEFORE] = before",
+    "ext[EXT_HASH_REVALIDATED] = revalidated",
+):
+    assert required in ap_source, required
+assert ap_source.index("targets != TARGET_COUNT || recorded != TARGET_COUNT") < (
+    ap_source.index("vmcb_commit(p, 8)")
+)
+assert not re.search(r"\bcandidates\s*\[[^\]]*\]\s*=\s*\{", ap_source)
+assert not re.search(
+    r"\bcandidates\s*\[\s*(?:0[xX][0-9a-fA-F]+|\d+)\s*\]\s*=", ap_source
+)
+for required in (
+    "HV_VMEXIT_REGULAR_1160 UINT64_C(0x62847551)",
+    "HV_CAVE_REGULAR_1160 UINT64_C(0x62806f00)",
+    "HV_VMEXIT_PRO_1160 UINT64_C(0x8e0847540)",
+    "HV_CAVE_PRO_1160 UINT64_C(0x8e0806ec0)",
+    "(!regular_hv && !pro_hv)",
+):
+    assert required in args_validate_source, required
+assert "self_pml4 - dmap" in utils_source
+assert "cr3_custom & 0xFFFFFFFF" not in utils_source
+assert utils_source.count("sceKernelGetMainSocId()") == 1
+assert "return KIT_UNKNOWN" in utils_source
+prepare_resume_source = PREPARE_RESUME.read_text()
+assert "sceKernelGetMainSocId()" not in prepare_resume_source
+assert "linux_i.kit_type == KIT_RETAIL_PRO" in prepare_resume_source
+assert "const enum kit_type detected_kit = get_kit_type();" in loader_source
+assert "info->kit_type = (int)detected_kit;" in loader_source
+assert loader_source.index("const enum kit_type detected_kit = get_kit_type();") < (
+    loader_source.index("dump_device_firmwares(initrd_path)")
+)
+assert loader_source.count("detected_kit == KIT_RETAIL_PRO") == 2
+assert "detected_kit != KIT_RETAIL && detected_kit != KIT_RETAIL_PRO" in (
+    loader_source
+)
+for required in (
+    "const uint64_t cave_index = args.hv_code_cave_pa >> 30;",
+    "cave_index >= l3_size && cave_index < 512",
+    "sizeof(shellcode_jmp) == 12",
+    "sizeof(shellcode_jmp) == 9",
+    "args.hv_code_cave_pa > 0x7fffffffULL",
+):
+    assert required in boot_linux_source, required
 # One staging call per build.  The bounded build keeps the result to tell a
 # refusal that needs a reboot from one that running again can get past.
 assert loader_source.count("stage_linux_aliases_1160(") == 2
@@ -426,6 +517,13 @@ for required in (
     "bp->ext_ramdisk_image = info.initrd >> 32;",
     "append_e820_table(bp, 0x000100000, 0x03fffc000, E820_TYPE_RAM);",
     "append_e820_table(bp, 0x001000000, 0x040000000, E820_TYPE_RESERVED);",
+    "append_e820_table(bp, 0x040000000, 0x060800000, E820_TYPE_RAM);",
+    "append_e820_table(bp, 0x060c00000, 0x064000000, E820_TYPE_RAM);",
+    "append_e820_table(bp, 0x064000000, 0x064829000,",
+    "append_e820_table(bp, 0x47f300000, 0x8e0000000, E820_TYPE_RESERVED);",
+    "append_e820_table(bp, 0x8e0000000, 0x8e2000000,",
+    "append_e820_table(bp, 0x8e2000000, 0x900000000, E820_TYPE_RESERVED);",
+    "? ACPI_RSDP_ADDRESS_PRO",
 ):
     assert required in inner_hv_boot_linux_source, required
 for required in (
@@ -477,7 +575,7 @@ assert 'cmdline_has_option_1160(cmdline, "mem=")' in loader_source
 assert 'cmdline_has_option_1160(cmdline, "memmap=")' in loader_source
 assert loader_source.count("dump_device_firmwares(initrd_path)") == 2
 assert (
-    "#if !PS5_1160_BOUNDED_BOOT_FILES\n  if (dump_device_firmwares(initrd_path)"
+    "#if !PS5_1160_BOUNDED_BOOT_FILES\n  if (detected_kit == KIT_RETAIL_PRO)"
     in loader_source
 )
 assert loader_source.index('"memmap=")') < loader_source.rindex(
@@ -567,8 +665,9 @@ else:
     for value in exact_size_immediates:
         assert value in elf, value
 
-# The display-enabled build mirrors Sonic's pre-Linux handoff and must never
-# silently regress to the run-7 headless compile.  Its two large MP3 buffers
+# The universal build retains the hardware-tested display handoff on regular
+# consoles and takes an explicit runtime headless branch on Pro. It must not
+# silently regress to a compile-time headless blob. Its two large MP3 buffers
 # live in the checked, retained tail of the linux_info page so the exact
 # hardware-proven 0x5000 executable cave is not moved.
 assert "SHELLCODE_1160_HEADLESS" not in wake_makefile
@@ -600,6 +699,10 @@ for required in (
     "Sonic MP3 buffers must remain 32-byte aligned",
     "args.linux_info_va + MP3_REQ_OFFSET",
     "args.linux_info_va + MP3_RSP_OFFSET",
+    "const int pro_headless =",
+    "args.hv_handle_vmexit_pa == HV_VMEXIT_PRO_1160",
+    "args.hv_code_cave_pa == HV_CAVE_PRO_1160",
+    "if (!pro_headless)",
 ):
     assert required in boot_linux_source, required
 assert "#if !SHELLCODE_1160_ONLY\n    clear_mp3_buffers();\n#endif" in boot_linux_source
@@ -616,6 +719,8 @@ only_1160_main = wake_main_source.split("#if SHELLCODE_1160_ONLY", 2)[2].split(
 cursor = 0
 for step in display_order:
     cursor = only_1160_main.index(step, cursor) + len(step)
+assert "args.hv_handle_vmexit_pa != HV_VMEXIT_PRO_1160" in only_1160_main
+assert "args.hv_code_cave_pa != HV_CAVE_PRO_1160" in only_1160_main
 offsets_present_source = hv_defeat_source.split(
     "static int offsets_present", 1
 )[1].split("static int walk_page", 1)[0]
@@ -719,19 +824,20 @@ if diagnostic_build:
     pre_cursor = instruction_position(
         boot_linux_body, r"<ps5_diag_pre_stage_1160>"
     )
+    reg32 = r"(?:e[a-z0-9]+|r(?:[89]|1[0-5])d)"
     for gate in (
-        r"\btest\s+ebx,ebx",
+        rf"\btest\s+{reg32},{reg32}",
         r"<g_vbios>",
-        r"\bcmp\s+ebx,0x1",
+        rf"\bcmp\s+{reg32},0x1",
         r"<transmitter_control>",
-        r"\bcmp\s+ebx,0x2",
+        rf"\bcmp\s+{reg32},0x2",
         r"<mp3_initialize>",
         r"<mp3_invoke>",
         r"<ps5_diag_clear_mp3_buffers_1160>",
-        r"\bcmp\s+ebx,0x3",
+        rf"\bcmp\s+{reg32},0x3",
         r"\bmov\s+edi,0x15",
         r"<mp3_invoke>",
-        r"\bcmp\s+ebx,0x4",
+        rf"\bcmp\s+{reg32},0x4",
         r"\bmov\s+edi,0x16",
         r"<mp3_invoke>",
     ):
@@ -815,8 +921,6 @@ assert len(re.findall(r"call\s+.*<memcpy>", patch_hv_body)) == 2
 # When the local live dumps are supplied, tie the portable structural audit to
 # the exact 11.60 bytes used for this release candidate.
 ktext_dump_path = os.environ.get("PS5_1160_KTEXT_DUMP")
-if release_check:
-    assert ktext_dump_path, "release check requires PS5_1160_KTEXT_DUMP"
 if ktext_dump_path:
     ktext_dump = Path(ktext_dump_path).read_bytes()
     assert len(ktext_dump) == 0xD30000
@@ -890,8 +994,6 @@ if ktext_dump_path:
     )
 
 hv_dump_path = os.environ.get("PS5_1160_HV_DUMP")
-if release_check:
-    assert hv_dump_path, "release check requires PS5_1160_HV_DUMP"
 if hv_dump_path:
     hv_dump = Path(hv_dump_path).read_bytes()
     assert len(hv_dump) == 0x62000
@@ -933,14 +1035,15 @@ def exact_hex_count(text: str, value: str) -> int:
 
 if dma_e820_safe:
     for value in safe_e820_values:
-        assert exact_hex_count(inner_hv_boot_linux, value) == 1, value
+        assert exact_hex_count(inner_hv_boot_linux, value) >= 1, value
     for value in old_e820_values:
         assert exact_hex_count(inner_hv_boot_linux, value) == 0, value
 else:
     for value in old_e820_values:
         assert exact_hex_count(inner_hv_boot_linux, value) == 1, value
     for value in safe_e820_values:
-        assert exact_hex_count(inner_hv_boot_linux, value) == 0, value
+        # The Pro branch always uses the corrected split low-memory map.
+        assert exact_hex_count(inner_hv_boot_linux, value) >= 1, value
 
 diag_label = (
     f" diag-pre={diag_pre_stage} diag-ops={diag_op_limit} "

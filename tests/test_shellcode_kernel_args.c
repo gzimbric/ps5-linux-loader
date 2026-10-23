@@ -16,8 +16,8 @@ static shellcode_kernel_args valid_candidate(void) {
   candidate.fun_transmitter_control = candidate.ktext + 0x6001;
   candidate.fun_mp3_initialize = candidate.ktext + 0x7001;
   candidate.fun_mp3_invoke = candidate.ktext + 0x8001;
-  candidate.hv_handle_vmexit_pa = 0x1001;
-  candidate.hv_code_cave_pa = 0x2001;
+  candidate.hv_handle_vmexit_pa = HV_VMEXIT_REGULAR_1160;
+  candidate.hv_code_cave_pa = HV_CAVE_REGULAR_1160;
   candidate.linux_info_va = UINT64_C(0xffff80000000c000);
   return candidate;
 }
@@ -27,6 +27,23 @@ int main(void) {
 
   assert(sizeof(candidate) == 0x98);
   assert(validate_shellcode_kernel_args_1160(&candidate) == 0);
+
+  candidate.hv_handle_vmexit_pa = HV_VMEXIT_PRO_1160;
+  candidate.hv_code_cave_pa = HV_CAVE_PRO_1160;
+  assert(validate_shellcode_kernel_args_1160(&candidate) == 0);
+
+  candidate = valid_candidate();
+  candidate.hv_handle_vmexit_pa = HV_VMEXIT_PRO_1160;
+  assert(validate_shellcode_kernel_args_1160(&candidate) != 0);
+  candidate = valid_candidate();
+  candidate.hv_code_cave_pa = HV_CAVE_PRO_1160;
+  assert(validate_shellcode_kernel_args_1160(&candidate) != 0);
+  candidate = valid_candidate();
+  candidate.hv_handle_vmexit_pa++;
+  assert(validate_shellcode_kernel_args_1160(&candidate) != 0);
+  candidate = valid_candidate();
+  candidate.hv_code_cave_pa--;
+  assert(validate_shellcode_kernel_args_1160(&candidate) != 0);
 
   /* Retail UART remains optional; Sonic's display handoff does not. */
   assert(candidate.kernel_uart_override == 0);

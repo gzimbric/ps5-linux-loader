@@ -13,14 +13,15 @@ run-name: 11.60 loader (${{ github.ref_name }})
 # These artifacts are build checks for testers, not releases. The job installs
 # whatever Homebrew ships at the time, so a file hash can differ when clang or
 # lld writes a different version into .comment and the build ID follows from
-# that. The job also hashes each ELF with .comment and .note.gnu.build-id
-# removed and compares that with the pinned release file. A match means the
-# code and data are byte-identical to the release. Hardware runs should still
-# use the exact release ELF named by the applicable tester guide.
+# that. Historical regular-console release comparisons remain in the summary
+# as provenance; universal regular/Pro builds are expected to differ. The
+# portable semantic audit, exact mode checks, and payload limits are the
+# current gates. Hardware runs should still use the exact ELF named by the
+# applicable tester guide.
 #
-# linux-1160-check is not run here. Its release audit needs the private 11.60
-# ktext and HV dumps, which must never be uploaded to GitHub. Compiling does
-# not read them.
+# Private firmware, HV dumps, and census output are never uploaded. They are
+# optional inputs for additional local provenance checks and are not needed by
+# this workflow's portable audit.
 
 on:
   push:
