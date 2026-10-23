@@ -5,11 +5,13 @@
 > [!CAUTION]
 > **Do not use a PS5 Pro CI artifact built from commit `96a5fab`.** Its Pro
 > hypervisor destinations were census-window starts rather than the exact
-> patch points. That workflow artifact has been deleted. The correction is
-> tracked in [PR #2](https://github.com/gzimbric/ps5-linux-loader/pull/2), but
-> no Pro ELF is approved for hardware testing until a reviewed release names
-> the exact file and checksum. The existing Run 18 and Run 21 releases are
-> regular-console builds and must not be used on a PS5 Pro.
+> patch points. That workflow artifact has been deleted. Use only the corrected
+> [PS5 Pro Linux test 1 prerelease](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-pro-linux-test-1),
+> exact file `ps5-linux-loader-1160-dma-e820-bounded.elf`, SHA-256
+> `31625e04aaac83fffbf8b1b4f8c012114a0cc85336c6a4c8c6cd9bc9ef492f4b`,
+> and follow its tester README. The existing Run 18 and Run 21 releases are
+> regular-console builds and must not be used on a PS5 Pro. The corrected Pro
+> release is still an experimental first hardware boot, not confirmed support.
 
 > **Experimental firmware 11.60 support on this fork:** `main` contains one
 > auto-detecting loader for regular retail PS5 and PS5 Pro consoles on the
@@ -22,6 +24,8 @@
 > wired Ethernet. The loader requires the exact Pro boot metadata and fails
 > closed if it does not match. This is not general upstream 11.xx support;
 > other revisions, repeatability, and multi-monitor coverage are unverified.
+> The controlled first-boot procedure and exact Ubuntu image are in the
+> [PS5 Pro 11.60 tester README](https://github.com/gzimbric/ps5-linux-loader/releases/download/firmware-11.60-pro-linux-test-1/PS5-PRO-11.60-TESTING.md).
 > See [PORTING_1160.md](PORTING_1160.md) for the exact build, evidence boundary,
 > and fail-closed hardware requirements.
 >
