@@ -1,114 +1,115 @@
-# PS5 Pro 11.60 Linux test 1
+# PS5 Pro 11.60 Linux test 2
 
-This is the first controlled Linux boot test for a retail PS5 Pro on exact
-firmware 11.60 (`0x11600005`). The loader passed the complete six-target CI
-build and source review, but this exact Pro Linux path has not yet booted on
-hardware. Treat it as experimental.
+This is an experimental Linux boot test for a retail PS5 Pro on firmware 11.60
+(`0x11600005`). Linux has not booted on a Pro yet, so every run helps.
 
-Do not use the older Run 18 or Run 21 loaders on a PS5 Pro. Do not use any CI
-artifact from loader commit `96a5fab`. Use only the ELF linked below and verify
-its checksum before sending it.
+Test 1 panicked on every Pro right after the boot file checks. Test 2 fixes
+that. Don't use test 1, the Run 18 or Run 21 loaders, or any other loader on a
+Pro.
 
 ## Downloads
 
-- Loader ELF: [ps5-linux-loader-1160-dma-e820-bounded.elf](https://github.com/gzimbric/ps5-linux-loader/releases/download/firmware-11.60-pro-linux-test-1/ps5-linux-loader-1160-dma-e820-bounded.elf)
-- Ubuntu Image 3: [ps5-ubuntu2404-k73.img.xz](https://github.com/gzimbric/ps5-linux-image/releases/download/ubuntu2404-k73-image-3/ps5-ubuntu2404-k73.img.xz)
-- Full Ubuntu release notes: [ubuntu2404-k73-image-3](https://github.com/gzimbric/ps5-linux-image/releases/tag/ubuntu2404-k73-image-3)
-
-SHA-256:
+- [ps5-linux-loader-1160-dma-e820-bounded.elf](https://github.com/gzimbric/ps5-linux-loader/releases/download/firmware-11.60-pro-linux-test-2/ps5-linux-loader-1160-dma-e820-bounded.elf)
+- [Ubuntu Image 3](https://github.com/gzimbric/ps5-linux-image/releases/download/ubuntu2404-k73-image-3/ps5-ubuntu2404-k73.img.xz)
 
 ```text
-31625e04aaac83fffbf8b1b4f8c012114a0cc85336c6a4c8c6cd9bc9ef492f4b  ps5-linux-loader-1160-dma-e820-bounded.elf
+70ee361202fa7e233294b00cb0c37d496be33bf9235e2fb872d5eca8290f4564  ps5-linux-loader-1160-dma-e820-bounded.elf
 9f038b316be5595b5b1629a86470cd7b955cf977741e022d9e1135898746de04  ps5-ubuntu2404-k73.img.xz
 ```
 
-On Windows, verify a download in PowerShell with:
+Check a file with `shasum -a 256 FILE` on Mac or Linux, or
+`Get-FileHash FILE -Algorithm SHA256` in PowerShell on Windows.
 
-```powershell
-(Get-FileHash .\ps5-linux-loader-1160-dma-e820-bounded.elf -Algorithm SHA256).Hash.ToLower()
-(Get-FileHash .\ps5-ubuntu2404-k73.img.xz -Algorithm SHA256).Hash.ToLower()
+## 1. Flash the USB drive
+
+Flash `ps5-ubuntu2404-k73.img.xz` with balenaEtcher or Raspberry Pi Imager and
+let it finish the verify step. If your computer offers to format the drive
+afterwards, say no.
+
+## 2. Edit cmdline.txt
+
+The first boot runs without the desktop and without the Pro GPU driver, so the
+screen stays black and you reach Linux over wired Ethernet with SSH.
+
+`cmdline.txt` is on the small FAT partition named `boot`. Mac and Windows hide
+that partition, so open it like this.
+
+**Mac.** In Terminal run `diskutil list external`, find the roughly 500 MB
+partition on the USB drive (for example `disk4s2`), then run
+`sudo diskutil mount disk4s2`. The `boot` volume shows up in Finder.
+
+**Windows.** Open Command Prompt as administrator and run `diskpart`, then
+`list disk`, `select disk N` (your USB drive), `list partition`,
+`select partition N` (the roughly 500 MB one), `assign letter=Z` and `exit`.
+Edit the file with `notepad Z:\cmdline.txt` from the same window. Explorer may
+still say access denied, which is fine.
+
+**Linux.** Mount the partition labeled `boot`.
+
+Add this to the end of the existing line, with one space before it. Keep
+everything on one line.
+
+```text
+systemd.unit=multi-user.target systemd.mask=ps5-performance.service systemd.mask=ps5fan.service modprobe.blacklist=amdgpu,ps5_gpufreq,ps5_cpufreq module_blacklist=amdgpu,ps5_gpufreq,ps5_cpufreq
 ```
 
-## Prepare the USB drive
+Don't add `nokaslr`, `mem=` or `memmap=`. Save, then eject the drive.
 
-1. Flash `ps5-ubuntu2404-k73.img.xz` with balenaEtcher or Raspberry Pi Imager.
-   Flashing erases the selected drive, so verify the drive before starting.
-2. Unplug and reconnect the drive. Ignore or cancel any request to format the
-   Linux partition. Open the small FAT boot partition.
-3. Open `cmdline.txt` in a plain-text editor. Keep its existing contents on one
-   line and append one space followed by this temporary first-boot profile:
+## 3. Run the loader
 
-   ```text
-   systemd.unit=multi-user.target systemd.mask=ps5-performance.service systemd.mask=ps5fan.service modprobe.blacklist=amdgpu,ps5_gpufreq,ps5_cpufreq module_blacklist=amdgpu,ps5_gpufreq,ps5_cpufreq
+1. Fully power off the PS5 Pro. Don't start from Rest Mode.
+2. Plug in the USB drive and an Ethernet cable, then power on.
+3. Run your jailbreak and elfldr only. No etaHEN, kstuff or other payloads.
+4. Send the ELF once, in a way that shows its output, and save that output.
+   On Mac or Linux, install `socat` and run this.
+
+   ```bash
+   socat -t 9999999 - TCP:PS5_IP:9021 < ps5-linux-loader-1160-dma-e820-bounded.elf | tee loader-output.txt
    ```
 
-4. Save as plain text without changing the filename, then safely eject the
-   drive. Do not add `nokaslr`, `mem=` or `memmap=`.
-
-The temporary profile intentionally disables the graphical desktop and the
-unvalidated Pro GPU, clock-scaling and fan-policy paths. A black HDMI screen is
-expected for this first test. The milestone is Linux over wired SSH.
-
-## Boot procedure
-
-1. Fully power off the PS5 Pro. Do not begin from Rest Mode, and do not reuse a
-   GameOS boot after a failed loader attempt.
-2. Connect the flashed Ubuntu USB drive and wired Ethernet before powering on.
-3. Boot GameOS normally. Do not load etaHEN, kstuff or another payload that
-   changes the same kernel or hypervisor state.
-4. Run the kernel exploit. After it reports success, send exactly
-   `ps5-linux-loader-1160-dma-e820-bounded.elf` with the usual payload sender.
-5. The loader should put the console into Rest Mode automatically. Wait until
-   the orange light stops blinking and is solid. Do not wake it early.
-6. Press the console power button once to wake it. The light should eventually
-   turn white. HDMI may remain black because the first-boot profile blacklists
-   `amdgpu`.
-7. Wait up to three minutes, find the console's wired address in the router's
-   DHCP/client list, and connect:
+   On Windows, install Nmap for `ncat` and run this.
 
    ```text
-   ssh ps5@CONSOLE_IP
+   ncat PS5_IP 9021 < ps5-linux-loader-1160-dma-e820-bounded.elf > loader-output.txt
    ```
 
-   The temporary login is `ps5` with password `ubuntu`.
+   A payload sender app also works, but then only the on-screen messages are
+   visible, so take photos.
+5. The loader puts the console into Rest Mode by itself. Wait for a solid
+   orange light, then press the power button once.
+6. The light should turn white. Give it up to three minutes, find the console's
+   address in your router's client list, and connect with `ssh ps5@CONSOLE_IP`.
+   The password is `ubuntu`.
 
-If the loader displays a refusal, freezes before solid orange, returns to
-GameOS, pulses blue indefinitely or powers off, photograph the exact message
-and note the LED timeline. Fully power off before any retry. Do not send the
-loader a second time in the same GameOS boot.
+Never send the loader twice in the same boot. If anything goes wrong, fully
+power off before trying again.
 
-## Collect the result
+## 4. Send back the results
 
-Once SSH works, run:
+Send these privately, not in a public channel.
 
-```bash
-uname -a
-cat /proc/cmdline
-ip -brief address
-lspci -nnk
-systemctl --failed --no-pager
-sudo systemctl start ps5-boot-report.service || true
-sudo journalctl -b --no-pager > /home/ps5/ps5-pro-first-boot-journal.txt
-sudo dmesg > /home/ps5/ps5-pro-first-boot-dmesg.txt
-sudo sync
-```
+- `loader-output.txt` or photos of the on-screen messages
+- What the light did after you pressed the power button
+- Your console model (the CFI number on the back)
 
-Copy these files back before changing any of the temporary gates:
-
-- `/boot/efi/ps5-boot-report.txt`
-- `/home/ps5/ps5-pro-first-boot-journal.txt`
-- `/home/ps5/ps5-pro-first-boot-dmesg.txt`
-
-The boot report removes Wi-Fi names and MAC addresses but retains IP addresses.
-Review it before posting publicly; send the first Pro result privately.
-
-When collection is complete, shut down Linux with:
+If SSH works, also run this and send the three files it lists.
 
 ```bash
-sudo poweroff
+sudo systemctl start ps5-boot-report.service
+sudo journalctl -b --no-pager > ~/journal.txt
+sudo dmesg > ~/dmesg.txt
+ls /boot/efi/ps5-boot-report.txt ~/journal.txt ~/dmesg.txt
 ```
 
-Wait until the console is fully off. Do not use Linux suspend or Rest Mode.
-Leave the temporary `cmdline.txt` gates in place until the headless baseline is
-reviewed. Display, fan policy and frequency scaling should be enabled one at a
-time in later boots.
+Then shut down with `sudo poweroff` and wait until the console is fully off.
+The boot report hides Wi-Fi names and MAC addresses but keeps IP addresses.
+
+## What the result means
+
+| What you see | What to send |
+|---|---|
+| A refusal message on screen | A photo of it and `loader-output.txt` |
+| A kernel panic before Rest Mode | `loader-output.txt`, the last lines matter most |
+| Solid orange, then blue pulsing or it powers off | The light timeline and `loader-output.txt` |
+| White light but no SSH after three minutes | Wait five more minutes, then report that |
+| SSH works | The files from step 4 |

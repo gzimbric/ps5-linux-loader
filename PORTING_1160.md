@@ -589,10 +589,10 @@ light, ping, or DRM connector state alone does not establish a Pro Linux boot.
 For that first Pro run, use the exact published
 [Ubuntu 24.04 Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/ubuntu2404-k73-image-3)
 with the exact
-[`ps5-linux-loader-1160-dma-e820-bounded.elf`](https://github.com/gzimbric/ps5-linux-loader/releases/download/firmware-11.60-pro-linux-test-1/ps5-linux-loader-1160-dma-e820-bounded.elf)
+[`ps5-linux-loader-1160-dma-e820-bounded.elf`](https://github.com/gzimbric/ps5-linux-loader/releases/download/firmware-11.60-pro-linux-test-2/ps5-linux-loader-1160-dma-e820-bounded.elf)
 from the corrected tester prerelease rather than rebuilding either component.
 Its SHA-256 is
-`31625e04aaac83fffbf8b1b4f8c012114a0cc85336c6a4c8c6cd9bc9ef492f4b`.
+`70ee361202fa7e233294b00cb0c37d496be33bf9235e2fb872d5eca8290f4564`.
 Follow the
 [PS5 Pro 11.60 tester README](PS5_PRO_1160_TESTING.md).
 Attach Ethernet and add these temporary kernel arguments to `cmdline.txt` so

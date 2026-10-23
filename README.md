@@ -9,7 +9,7 @@
 > |---|---|---|
 > | PS5 with IW620 Wi-Fi (`1b4b:2b56`) | `ps5-linux-loader-1160-dma-e820-bounded-wifi.elf` from [Run 21](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-dma-e820-bounded-run21) | [CachyOS Image 4](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-4) |
 > | PS5 with MediaTek Wi-Fi (`14c3:7961`) | `ps5-linux-loader-1160-dma-e820-bounded.elf` from [Run 21](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-dma-e820-bounded-run21) | [CachyOS Image 4](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-4) |
-> | PS5 Pro | `ps5-linux-loader-1160-dma-e820-bounded.elf` from [Pro Linux test 1](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-pro-linux-test-1) | [Ubuntu Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/ubuntu2404-k73-image-3) |
+> | PS5 Pro | `ps5-linux-loader-1160-dma-e820-bounded.elf` from [Pro Linux test 2](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-pro-linux-test-2) | [Ubuntu Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/ubuntu2404-k73-image-3) |
 >
 > PS5 Pro Linux is experimental and hasn't booted yet. Follow the [Pro tester README](PS5_PRO_1160_TESTING.md) and don't use any other loader on a Pro. Regular consoles can follow the [Image 4 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-4-tester-guide.md), and [PORTING_1160.md](PORTING_1160.md) has the build details.
 
