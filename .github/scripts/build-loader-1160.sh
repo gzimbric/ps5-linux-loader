@@ -15,7 +15,7 @@ rm -rf "$dist"
 mkdir -p "$dist/build-info" "$dist/targets"
 
 # target|ELF|DMA E820|visible refusals|Wi-Fi firmware|bounded files|
-# pinned release|pinned file SHA-256|pinned code SHA-256
+# historical regular release|historical file SHA-256|historical code SHA-256
 cat >"$targets" <<'TARGETS'
 linux-1160|bin/ps5-linux-loader-1160.elf|0|0|0|0|Run 15|422b87ec39ca0edfce8dddd609c2eff1cc7adcb2732b7909b76fafbd60dd2336|f900298838f8a8b83954fdae5c5eb9ff6a9c628add6437bc10790e905aba8503
 linux-1160-dma-e820|bin/ps5-linux-loader-1160-dma-e820.elf|1|0|0|0|Run 18 DMA E820|2e1758a2d013305bcb9faa0eb3adf18c34ed76ad85313dd945719c8bf2a0c9c0|6737e7352b3b6bdbad83c4e6b4980c07926f9624b3e4a3dfe52f2a5ea0f3038c
@@ -104,8 +104,8 @@ write_build_info() {
     if [ "$file_match" = unpinned ]; then
       echo "not pinned: no pinned release file to compare with"
     else
-      echo "$release file: $release_sha256 ($file_match)"
-      echo "$release code: $code_sha256 ($code_match)"
+      echo "historical $release file: $release_sha256 ($file_match)"
+      echo "historical $release code: $code_sha256 ($code_match)"
     fi
   } >"$target_dist/build-info.txt"
 
@@ -123,13 +123,22 @@ write_build_info() {
   if [ "$code_match" = unpinned ]; then
     echo "::notice title=$target::sha256 $file_sha (not pinned)"
   elif [ "$code_match" = same ]; then
-    echo "::notice title=$target::code matches $release (file hash $file_match)"
+    echo "::notice title=$target::code matches historical $release (file hash $file_match)"
   else
-    echo "::notice title=$target::code differs from $release (expected if the loader source changed)"
+    echo "::notice title=$target::code differs from historical $release (expected for the universal regular/Pro loader)"
   fi
 }
 
 built=0
+
+# Exercise the public wake-argument ABI and reject mixed or off-by-one regular
+# and Pro HV address pairs. The startup-AP synthetic-DMAP test runs through
+# every target's break-hv-1160-check dependency.
+mkdir -p build/tests
+cc -std=c11 -O2 -Wall -Wextra -Werror tests/test_shellcode_kernel_args.c \
+  -o build/tests/test_shellcode_kernel_args
+build/tests/test_shellcode_kernel_args
+
 while IFS='|' read -r target elf dma_e820 visible_refusals wifi_fw \
   bounded_boot_files release release_sha256 code_sha256; do
   if ! grep -Eq "^${target}([[:space:]]|:)" Makefile; then

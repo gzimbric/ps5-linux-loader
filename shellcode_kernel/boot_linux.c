@@ -8,6 +8,7 @@
 #else
 #include "../shellcode_hv/shellcode_hv.h"
 #endif
+#include "shellcode_kernel_args_validate.h"
 #include "utils.h"
 
 #define DIG1TRANSMITTERCONTROL 0x4c
@@ -228,25 +229,44 @@ static void install_hv_code(void) {
     *(uint64_t *)PHYS_TO_DMAP(l40_l3_addr + i * 8) = identity_pml40_l3[i];
   }
 
+  /* The Pro trampoline lives above the five low 1-GiB identity leaves. */
+  const uint64_t cave_index = args.hv_code_cave_pa >> 30;
+  _Static_assert((HV_CAVE_PRO_1160 >> 30) == 0x23,
+                 "11.60 Pro cave identity index changed");
+  if (cave_index >= l3_size && cave_index < 512) {
+    *(uint64_t *)PHYS_TO_DMAP(l40_l3_addr + cave_index * 8) =
+        (cave_index << 30) | 0x83;
+  }
+
   // Install shellcode_hv
   memcpy((void *)PHYS_TO_DMAP(cave_hv_code), shellcode_hv_bin,
          shellcode_hv_bin_len);
 }
 
 void patch_hv(void) {
-  // Jump to shellcode final identity mapping
-  uint8_t shellcode_jmp[] = {0x48, 0xC7, 0xC0, 0xAA,
-                             0xAA, 0xAA, 0xAA, // mov rax, 0xAAAAAAAA
-                             0xFF, 0xE0};      // jmp rax
-  _Static_assert(sizeof(shellcode_jmp) == 9,
-                 "VMEXIT absolute-jump patch size changed");
-
-  // Update code cave in hv 1:1 region
-  *(uint32_t *)(&shellcode_jmp[3]) = (uint32_t)args.hv_code_cave_pa;
-
-  // Just patch the VMEXIT handler directly, avoiding all checks
-  memcpy((void *)PHYS_TO_DMAP(args.hv_handle_vmexit_pa), shellcode_jmp,
-         sizeof(shellcode_jmp));
+  if (args.hv_code_cave_pa > 0x7fffffffULL) {
+    uint8_t shellcode_jmp[] = {
+        0x48, 0xB8, 0xAA, 0xAA, 0xAA, 0xAA,
+        0xAA, 0xAA, 0xAA, 0xAA, // movabs rax, 0xAAAAAAAAAAAAAAAA
+        0xFF, 0xE0              // jmp rax
+    };
+    _Static_assert(sizeof(shellcode_jmp) == 12,
+                   "Pro VMEXIT absolute-jump patch size changed");
+    *(uint64_t *)(&shellcode_jmp[2]) = args.hv_code_cave_pa;
+    memcpy((void *)PHYS_TO_DMAP(args.hv_handle_vmexit_pa), shellcode_jmp,
+           sizeof(shellcode_jmp));
+  } else {
+    uint8_t shellcode_jmp[] = {
+        0x48, 0xC7, 0xC0, 0xAA, 0xAA, 0xAA,
+        0xAA,      // mov rax, 0xAAAAAAAA
+        0xFF, 0xE0 // jmp rax
+    };
+    _Static_assert(sizeof(shellcode_jmp) == 9,
+                   "regular VMEXIT absolute-jump patch size changed");
+    *(uint32_t *)(&shellcode_jmp[3]) = (uint32_t)args.hv_code_cave_pa;
+    memcpy((void *)PHYS_TO_DMAP(args.hv_handle_vmexit_pa), shellcode_jmp,
+           sizeof(shellcode_jmp));
+  }
 
   uint8_t shellcode_identity_and_jmp[] = {
       0x48, 0xB8, 0xAA, 0xAA, 0xAA,
@@ -275,7 +295,18 @@ void boot_linux(void) {
   // Common bootloader code
   install_hv_code();
 
+  /* The same ELF serves regular and Pro consoles.  Keep the first Pro boot
+   * deliberately headless: its HV anchors and memory map are measured, but
+   * the regular console's VBIOS/DP/MP3 handoff has not been validated on Pro.
+   * The kernel and initrd still stage normally for Ethernet/SSH testing. */
+  memcpy(&info, (void *)args.linux_info_va, sizeof(struct linux_info));
+  const int pro_headless =
+      args.fw_version == PS5_FW_1160 &&
+      args.hv_handle_vmexit_pa == HV_VMEXIT_PRO_1160 &&
+      args.hv_code_cave_pa == HV_CAVE_PRO_1160;
+
 #if !SHELLCODE_1160_HEADLESS
+  if (!pro_headless) {
 #if SHELLCODE_1160_DIAGNOSTIC
   const uint32_t diag_pre_stage = ps5_diag_pre_stage_1160;
 
@@ -316,11 +347,10 @@ void boot_linux(void) {
     mp3_enable_output(0, 1);
   }
 #endif
+  }
 #endif
 
   // Copy bzImage and initrd into contiguous memory.
-  memcpy(&info, (void *)args.linux_info_va, sizeof(struct linux_info));
-
   info.n_tmrs = 0;
 #if !SHELLCODE_1160_HEADLESS
   if (args.fw_version >= 0x0500 && args.fw_version < 0x0800) {

@@ -33,6 +33,15 @@
   "root=/dev/sda2 rw rootwait console=ttyTitania0 console=tty0 "               \
   "video=DP-1:1920x1080@60 mitigations=off idle=halt pci=pcie_bus_perf"
 
+/*
+ * The regular HV starts at its carveout base.  On retail Pro the carveout is
+ * a high physical aperture and the same HV image starts 8 MiB into it.
+ */
+#define HV_BASE_REGULAR 0x62800000ULL
+#define HV_REGION_BASE_PRO 0x8e0000000ULL
+#define HV_REGION_SIZE_PRO 0x2000000ULL
+#define HV_CODE_OFFSET_PRO 0x800000ULL
+
 #define DEBUG 0 // Toggle to 0 to disable logs
 
 #endif

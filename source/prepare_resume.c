@@ -406,6 +406,30 @@ uint64_t prepare_sck_args(void) {
   args.hv_handle_vmexit_pa = env_offset.HV_HANDLE_VMEXIT_PA;
   args.hv_code_cave_pa = env_offset.HV_CODE_CAVE_PA;
 
+  if (fw == PS5_FW_1160) {
+    if (linux_i.kit_type != KIT_RETAIL &&
+        linux_i.kit_type != KIT_RETAIL_PRO) {
+      notify("11.60 wake arguments refused: console variant is not a "
+             "supported retail model\n");
+      return 0;
+    }
+    if (linux_i.kit_type == KIT_RETAIL_PRO) {
+      /* The 11.60 Pro anchors were measured directly.  They are close to,
+       * but not byte-for-byte relocations of, the regular-console offsets. */
+      args.hv_handle_vmexit_pa = HV_VMEXIT_PRO_1160;
+      args.hv_code_cave_pa = HV_CAVE_PRO_1160;
+    }
+  }
+
+  _Static_assert(HV_REGION_BASE_PRO + HV_CODE_OFFSET_PRO +
+                         UINT64_C(0x47540) ==
+                     HV_VMEXIT_PRO_1160,
+                 "11.60 Pro VMEXIT relocation changed");
+  _Static_assert(HV_REGION_BASE_PRO + HV_CODE_OFFSET_PRO +
+                         UINT64_C(0x6ec0) ==
+                     HV_CAVE_PRO_1160,
+                 "11.60 Pro HV cave relocation changed");
+
   args.linux_info_va = linux_i.linux_info;
 
   if (fw == PS5_FW_1160 && validate_shellcode_kernel_args_1160(&args) != 0) {

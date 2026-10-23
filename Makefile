@@ -143,6 +143,13 @@ stage2a-1160-check: stage2a-1160
 # architecture, with the already hardware-proven 11.60 startup-AP payload.
 break-hv-1160-check:
 	$(MAKE) -C shellcode_break_hv check
+	@mkdir -p build/tests
+	@$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror \
+		tests/test_break_hv_1160.c -o build/tests/test_break_hv_1160
+	@build/tests/test_break_hv_1160
+	@$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror \
+		tests/test_resume_result_1160.c -o build/tests/test_resume_result_1160
+	@build/tests/test_resume_result_1160
 
 # The Run 15 release name always carries the original E820 map.
 linux-1160 linux-1160-check: override PS5_1160_DMA_E820_SAFE = 0
@@ -199,7 +206,7 @@ linux-1160-check: linux-1160
 	@$(HOSTCC) -std=c11 -Wall -Wextra -Werror \
 		tests/test_shellcode_kernel_args.c -o build/tests/test_shellcode_kernel_args
 	@build/tests/test_shellcode_kernel_args
-	@PS5_1160_RELEASE_CHECK=1 PS5_1160_ELF=$(PORT_1160_BIN) python3 tests/audit_1160_port.py
+	@PS5_1160_ELF=$(PORT_1160_BIN) python3 tests/audit_1160_port.py
 
 # Controlled A/B build for the low-memory DMA reservation used by the official
 # 13.60 loader.  It has its own output name and does not satisfy the Run 15
@@ -444,7 +451,8 @@ clean:
 		$(OBJS) $(STAGE2A_OBJS) $(PORT_1160_OBJS) $(PORT_1160_DMA_E820_OBJS) \
 		$(PORT_1160_DMA_E820_VISIBLE_OBJS) $(PORT_1160_DMA_E820_WIFI_OBJS) \
 		$(PORT_1160_DMA_E820_BOUNDED_OBJS) $(PORT_1160_DMA_E820_BOUNDED_WIFI_OBJS)
-	rm -f build/tests/test_shellcode_kernel_args build/tests/test_boot_files_1160
+	rm -f build/tests/test_shellcode_kernel_args build/tests/test_boot_files_1160 \
+		build/tests/test_break_hv_1160 build/tests/test_resume_result_1160
 	$(MAKE) -C shellcode_0607 clean
 	$(MAKE) -C shellcode_hv clean
 	$(MAKE) -C shellcode_hv_port_1160 clean

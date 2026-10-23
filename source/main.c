@@ -14,8 +14,6 @@
 #endif
 #include <unistd.h>
 
-#define PS5_PRO_SOC_ID 0x840fd0
-
 #if FW_1160_PORT
 static void checkpoint_1160_main(const char *stage) {
   if (fw != 0x1160)
@@ -41,14 +39,6 @@ int main(void) {
   /* This read-only raw gate precedes notifications and all state changes. */
   if (kernel_get_fw_version() != 0x11600005U) {
     notify("11.60 loader refused: exact retail firmware required\n");
-    return -1;
-  }
-#endif
-
-#if FW_1160_PORT
-  /* The proven 11.60 AP donor uses the regular-model HV physical layout. */
-  if (sceKernelGetMainSocId() == PS5_PRO_SOC_ID) {
-    notify("11.60 loader refused: PS5 Pro HV layout is not validated\n");
     return -1;
   }
 #endif
