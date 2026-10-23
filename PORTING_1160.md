@@ -70,12 +70,14 @@ path is a test candidate, not a hardware-proven release.
   the exact cross-firmware homolog `ktext + 0xa57354`
   (`add rsp,0x28; pop rbp; ret`) for their six-qword IST frames.
 - The regular VMEXIT transition stub uses Sonic's established physical HV
-  padding at `0x62806f00`. The bounded Pro census measured its distinct
-  11.60 anchors at `0x8e0806ec0` for the code cave and `0x8e0847540` for the
-  VMEXIT patch. These are not assumed to be byte-for-byte relocations of the
-  regular offsets. The public wake argument validator accepts only the exact
-  regular address pair or the exact Pro pair; mixed and arbitrary pairs are
-  rejected.
+  padding at `0x62806f00`. The bounded Pro census authenticated the same
+  relocation-safe windows as the regular 11.60 image. As in upstream 13.60,
+  the production destinations preserve the exact offsets inside the relocated
+  Pro HV code image: `0x8e0806f00` for the cave and `0x8e0847551` for VMEXIT.
+  The window starts (`0x8e0806ec0` and `0x8e0847540`) are validation anchors,
+  not patch destinations. The public wake argument validator accepts only the
+  exact regular address pair or the exact Pro pair; mixed and arbitrary pairs
+  are rejected.
 - The regular trampoline retains its nine-byte immediate jump. The Pro target
   is above 4 GiB, so it uses a 12-byte `movabs`/`jmp` trampoline and installs
   the required 1-GiB identity leaf at index `0x23`. Physical-address helpers
