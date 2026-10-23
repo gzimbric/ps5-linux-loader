@@ -2,6 +2,15 @@
 
 **ps5-linux** leverages patched HV vulnerabilities to transform your **PS5 Phat and Slim** console running **3.00-7.61 firmwares** into a highly capable Linux PC, unlocking its full hardware potential for desktop use. Powered by 8 CPU cores (16 threads) at **3.5 GHz** and a GPU at **2.23 GHz**, it provides enough performance to run Steam games and various emulators with impressive fluidity.
 
+> [!CAUTION]
+> **Do not use a PS5 Pro CI artifact built from commit `96a5fab`.** Its Pro
+> hypervisor destinations were census-window starts rather than the exact
+> patch points. That workflow artifact has been deleted. The correction is
+> tracked in [PR #2](https://github.com/gzimbric/ps5-linux-loader/pull/2), but
+> no Pro ELF is approved for hardware testing until a reviewed release names
+> the exact file and checksum. The existing Run 18 and Run 21 releases are
+> regular-console builds and must not be used on a PS5 Pro.
+
 > **Experimental firmware 11.60 support on this fork:** `main` contains one
 > auto-detecting loader for regular retail PS5 and PS5 Pro consoles on the
 > exact raw firmware `0x11600005`. On a regular PS5, one full Run 15 cycle
