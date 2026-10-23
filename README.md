@@ -2,75 +2,16 @@
 
 **ps5-linux** leverages patched HV vulnerabilities to transform your **PS5 Phat and Slim** console running **3.00-7.61 firmwares** into a highly capable Linux PC, unlocking its full hardware potential for desktop use. Powered by 8 CPU cores (16 threads) at **3.5 GHz** and a GPU at **2.23 GHz**, it provides enough performance to run Steam games and various emulators with impressive fluidity.
 
-> [!CAUTION]
-> **Do not use a PS5 Pro CI artifact built from commit `96a5fab`.** Its Pro
-> hypervisor destinations were census-window starts rather than the exact
-> patch points. That workflow artifact has been deleted. Use only the corrected
-> [PS5 Pro Linux test 1 prerelease](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-pro-linux-test-1),
-> exact file `ps5-linux-loader-1160-dma-e820-bounded.elf`, SHA-256
-> `31625e04aaac83fffbf8b1b4f8c012114a0cc85336c6a4c8c6cd9bc9ef492f4b`,
-> and follow its tester README. The existing Run 18 and Run 21 releases are
-> regular-console builds and must not be used on a PS5 Pro. The corrected Pro
-> release is still an experimental first hardware boot, not confirmed support.
-
-> **Experimental firmware 11.60 support on this fork:** `main` contains one
-> auto-detecting loader for regular retail PS5 and PS5 Pro consoles on the
-> exact raw firmware `0x11600005`. On a regular PS5, one full Run 15 cycle
-> produced physical HDMI output and authenticated Linux over wired SSH. The
-> Pro path has passed bounded on-device layout, anchor, target-count, and
-> cleanup validation, but its first complete Linux boot is still a controlled
-> hardware test. The same ELF deliberately skips the regular PS5's unverified
-> VBIOS/DP/MP3 display handoff on Pro, so the first Pro run is headless over
-> wired Ethernet. The loader requires the exact Pro boot metadata and fails
-> closed if it does not match. This is not general upstream 11.xx support;
-> other revisions, repeatability, and multi-monitor coverage are unverified.
-> The controlled first-boot procedure and exact Ubuntu image are in the
-> [PS5 Pro 11.60 tester README](PS5_PRO_1160_TESTING.md).
-> See [PORTING_1160.md](PORTING_1160.md) for the exact build, evidence boundary,
-> and fail-closed hardware requirements.
+> [!NOTE]
+> This fork adds PS5 firmware **11.60** (raw `0x11600005`).
 >
-> `main` also contains the opt-in build with upstream's 13.60 low-memory DMA
-> reservation. Run 18 booted it once with CachyOS and Run 19 once with the
-> CI-built Ubuntu 24.04 image from the tester guide (`ubuntu2404-1160-build-3`),
-> both on one CFI-1115B. Its ELF is attached to the
-> `firmware-11.60-dma-e820-run18` release for testers. Run 21 booted the
-> bounded Wi-Fi target once with an earlier local CachyOS 7.3 image. The same
-> bounded Wi-Fi release ELF later booted the exact public
-> [CachyOS Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-3)
-> artifact once on that console. Image 3 is still the newest CachyOS image
-> with an identity-verified hardware boot. Follow the
-> [Image 3 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-3-tester-guide.md)
-> for that image. Image 3 retains rmux's pinned Linux 7.3
-> PS5 patch set and adds its separately documented IW620 follow-ups.
+> | Console | Loader | Image |
+> |---|---|---|
+> | PS5 with IW620 Wi-Fi (`1b4b:2b56`) | `ps5-linux-loader-1160-dma-e820-bounded-wifi.elf` from [Run 21](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-dma-e820-bounded-run21) | [CachyOS Image 4](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-4) |
+> | PS5 with MediaTek Wi-Fi (`14c3:7961`) | `ps5-linux-loader-1160-dma-e820-bounded.elf` from [Run 21](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-dma-e820-bounded-run21) | [CachyOS Image 4](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-4) |
+> | PS5 Pro | `ps5-linux-loader-1160-dma-e820-bounded.elf` from [Pro Linux test 1](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-pro-linux-test-1) | [Ubuntu Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/ubuntu2404-k73-image-3) |
 >
-> [CachyOS Image 4](https://github.com/gzimbric/ps5-linux-image/releases/tag/cachyos1160-k73-image-4)
-> is now a public tester prerelease. It keeps rmux's patch set and uses one
-> image for the two known Wi-Fi paths, but the loader still depends on the
-> console's chipset:
->
-> - An IW620 console (`1b4b:2b56`) uses
->   `ps5-linux-loader-1160-dma-e820-bounded-wifi.elf`, SHA-256
->   `e9fe6469943e97a635eccd3f674e55876b56cd1bbd69023eee3af4acea3a1b5f`.
->   It copies that console's own IW620 firmware to the USB boot drive. The ELF
->   and release contain no IW620 firmware; do not redistribute the dumped file.
-> - A MediaTek MT7921 console (`14c3:7961`) uses
->   `ps5-linux-loader-1160-dma-e820-bounded.elf`, SHA-256
->   `1c80b040c5a808b3f09418728424a875d5598fe6b2a5d68adeb4db5979a7541a`.
->   It does not dump IW620 firmware; Image 4 packages the firmware used by
->   `mt7921e`.
->
-> CI built Image 4 and passed its image checks, but neither the exact Image 4
-> artifact nor the bounded non-Wi-Fi ELF has been booted on hardware. MediaTek
-> Wi-Fi has passed source and structural checks only, and the MediaTek
-> Bluetooth hardware and driver path are unknown. See the
-> [Image 4 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-4-tester-guide.md).
-> These tester files are for exact retail firmware 11.60 only.
-
-The general feature list below does not establish those features on 11.60.
-Internal Bluetooth failed in Run 21, while the later exact public Image 3 boot
-paired a DualSense through the IW620 Bluetooth path. That result does not cover
-MediaTek Bluetooth. VCN initialized and its rings came up in Run 21, but video
-decode was not tested.
+> PS5 Pro Linux is experimental and hasn't booted yet. Follow the [Pro tester README](PS5_PRO_1160_TESTING.md) and don't use any other loader on a Pro. Regular consoles can follow the [Image 4 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-4-tester-guide.md), and [PORTING_1160.md](PORTING_1160.md) has the build details.
 
 Features:
 
