@@ -368,6 +368,12 @@ for marker in (
 loader_source = LOADER.read_text()
 staging_source = STAGING.read_text()
 hv_defeat_source = HV_DEFEAT.read_text()
+
+# The VMCB scan range is hypervisor memory.  Before the startup-AP strike the
+# loader may walk its page tables but must never read it.
+preflight_body = hv_defeat_source.split(
+    "static int preflight_scan_range_1160(", 1)[1].split("\n}\n", 1)[0]
+assert "kernel_copyout" not in preflight_body
 boot_linux_source = BOOT_LINUX.read_text()
 ap_source = AP_SOURCE.read_text()
 args_validate_source = ARGS_VALIDATE.read_text()

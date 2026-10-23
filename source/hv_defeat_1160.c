@@ -313,17 +313,19 @@ static int resolve_kernel_pa_1160(uint64_t va, uint64_t *pa_out) {
   return -1;
 }
 
+/*
+ * Walk the guest page tables only.  These frames belong to the hypervisor and
+ * NPT still protects them before the startup-AP strike, so reading them from
+ * the guest is fatal.  The AP payload reads them after it disables NPT.
+ */
 static int preflight_scan_range_1160(uint64_t scan_lo, uint64_t scan_hi) {
-  uint64_t probe;
-
   if (scan_lo >= scan_hi || (scan_lo & 0xfffULL) ||
       (scan_hi & 0xfffULL))
     return -1;
   for (uint64_t pa = scan_lo; pa < scan_hi; pa += 0x1000ULL) {
     uint64_t resolved;
     const uint64_t va = dmap + pa;
-    if (resolve_kernel_pa_1160(va, &resolved) || resolved != pa ||
-        kernel_copyout(va, &probe, sizeof(probe)) != 0)
+    if (resolve_kernel_pa_1160(va, &resolved) || resolved != pa)
       return -1;
   }
   return 0;
