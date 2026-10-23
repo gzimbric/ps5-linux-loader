@@ -252,6 +252,11 @@ void patch_hv(void) {
     };
     _Static_assert(sizeof(shellcode_jmp) == 12,
                    "Pro VMEXIT absolute-jump patch size changed");
+    _Static_assert(HV_VMEXIT_PRO_1160 >=
+                           HV_CODE_BASE_PRO_1160 + UINT64_C(0x47540) &&
+                       HV_VMEXIT_PRO_1160 + sizeof(shellcode_jmp) <=
+                           HV_CODE_BASE_PRO_1160 + UINT64_C(0x47580),
+                   "Pro VMEXIT patch left its authenticated window");
     *(uint64_t *)(&shellcode_jmp[2]) = args.hv_code_cave_pa;
     memcpy((void *)PHYS_TO_DMAP(args.hv_handle_vmexit_pa), shellcode_jmp,
            sizeof(shellcode_jmp));
@@ -278,6 +283,11 @@ void patch_hv(void) {
   };
   _Static_assert(sizeof(shellcode_identity_and_jmp) == 25,
                  "HV identity transition stub size changed");
+  _Static_assert(HV_CAVE_PRO_1160 >=
+                         HV_CODE_BASE_PRO_1160 + UINT64_C(0x6ec0) &&
+                     HV_CAVE_PRO_1160 + sizeof(shellcode_identity_and_jmp) <=
+                         HV_CODE_BASE_PRO_1160 + UINT64_C(0x6f40),
+                 "Pro cave patch left its authenticated window");
 
   // Update CR3 PA (from config)
   *(uint64_t *)(&shellcode_identity_and_jmp[2]) = cave_hv_paging;

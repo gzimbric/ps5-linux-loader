@@ -6,8 +6,23 @@
 #define PS5_FW_1160 0x1160U
 #define HV_VMEXIT_REGULAR_1160 UINT64_C(0x62847551)
 #define HV_CAVE_REGULAR_1160 UINT64_C(0x62806f00)
-#define HV_VMEXIT_PRO_1160 UINT64_C(0x8e0847540)
-#define HV_CAVE_PRO_1160 UINT64_C(0x8e0806ec0)
+#define HV_CODE_BASE_REGULAR_1160 UINT64_C(0x62800000)
+#define HV_CODE_BASE_PRO_1160 UINT64_C(0x8e0800000)
+
+/* The census authenticated windows around these locations, not the patch
+ * locations themselves.  Match the upstream Pro method: preserve the exact
+ * regular-console offsets within the relocated Pro HV code image. */
+#define HV_VMEXIT_PRO_1160                                                \
+  (HV_CODE_BASE_PRO_1160 +                                                \
+   (HV_VMEXIT_REGULAR_1160 - HV_CODE_BASE_REGULAR_1160))
+#define HV_CAVE_PRO_1160                                                  \
+  (HV_CODE_BASE_PRO_1160 +                                                \
+   (HV_CAVE_REGULAR_1160 - HV_CODE_BASE_REGULAR_1160))
+
+_Static_assert(HV_VMEXIT_PRO_1160 == UINT64_C(0x8e0847551),
+               "11.60 Pro VMEXIT rebase changed");
+_Static_assert(HV_CAVE_PRO_1160 == UINT64_C(0x8e0806f00),
+               "11.60 Pro HV cave rebase changed");
 
 static inline int shellcode_kernel_va_is_canonical(uint64_t va) {
   return va >= UINT64_C(0xffff800000000000);

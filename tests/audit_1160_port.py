@@ -286,8 +286,10 @@ assert elf.count(u32(0x840FD0)) >= 1
 assert b"PS5 Pro HV layout is not validated" not in elf
 assert b"PS5 Pro detected" in elf
 assert b"11.60 Pro HV metadata did not match; refusing to arm" in elf
-assert u64(0x8E0806EC0) in elf
-assert u64(0x8E0847540) in elf
+assert u64(0x8E0806F00) in elf
+assert u64(0x8E0847551) in elf
+assert u64(0x8E0806EC0) not in elf
+assert u64(0x8E0847540) not in elf
 
 # The dedicated build must use the live-tested Stage-1A/1B checked alias
 # transaction rather than entering the upstream unchecked helper from
@@ -448,11 +450,20 @@ assert not re.search(
 for required in (
     "HV_VMEXIT_REGULAR_1160 UINT64_C(0x62847551)",
     "HV_CAVE_REGULAR_1160 UINT64_C(0x62806f00)",
-    "HV_VMEXIT_PRO_1160 UINT64_C(0x8e0847540)",
-    "HV_CAVE_PRO_1160 UINT64_C(0x8e0806ec0)",
+    "HV_CODE_BASE_REGULAR_1160 UINT64_C(0x62800000)",
+    "HV_CODE_BASE_PRO_1160 UINT64_C(0x8e0800000)",
+    "HV_VMEXIT_REGULAR_1160 - HV_CODE_BASE_REGULAR_1160",
+    "HV_CAVE_REGULAR_1160 - HV_CODE_BASE_REGULAR_1160",
+    "HV_VMEXIT_PRO_1160 == UINT64_C(0x8e0847551)",
+    "HV_CAVE_PRO_1160 == UINT64_C(0x8e0806f00)",
     "(!regular_hv && !pro_hv)",
 ):
     assert required in args_validate_source, required
+for required in (
+    '"Pro VMEXIT patch left its authenticated window"',
+    '"Pro cave patch left its authenticated window"',
+):
+    assert required in boot_linux_source, required
 assert "self_pml4 - dmap" in utils_source
 assert "cr3_custom & 0xFFFFFFFF" not in utils_source
 assert utils_source.count("sceKernelGetMainSocId()") == 1

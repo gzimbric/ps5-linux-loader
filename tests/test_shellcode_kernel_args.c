@@ -32,6 +32,19 @@ int main(void) {
   candidate.hv_code_cave_pa = HV_CAVE_PRO_1160;
   assert(validate_shellcode_kernel_args_1160(&candidate) == 0);
 
+  /* The census-window starts are authentication anchors, never production
+   * destinations. Reject the old pair and either old value mixed with the
+   * corrected Pro pair. */
+  candidate.hv_handle_vmexit_pa = UINT64_C(0x8e0847540);
+  candidate.hv_code_cave_pa = UINT64_C(0x8e0806ec0);
+  assert(validate_shellcode_kernel_args_1160(&candidate) != 0);
+  candidate.hv_handle_vmexit_pa = UINT64_C(0x8e0847540);
+  candidate.hv_code_cave_pa = HV_CAVE_PRO_1160;
+  assert(validate_shellcode_kernel_args_1160(&candidate) != 0);
+  candidate.hv_handle_vmexit_pa = HV_VMEXIT_PRO_1160;
+  candidate.hv_code_cave_pa = UINT64_C(0x8e0806ec0);
+  assert(validate_shellcode_kernel_args_1160(&candidate) != 0);
+
   candidate = valid_candidate();
   candidate.hv_handle_vmexit_pa = HV_VMEXIT_PRO_1160;
   assert(validate_shellcode_kernel_args_1160(&candidate) != 0);

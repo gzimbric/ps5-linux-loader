@@ -414,19 +414,23 @@ uint64_t prepare_sck_args(void) {
       return 0;
     }
     if (linux_i.kit_type == KIT_RETAIL_PRO) {
-      /* The 11.60 Pro anchors were measured directly.  They are close to,
-       * but not byte-for-byte relocations of, the regular-console offsets. */
+      /* The Pro census authenticated the same relocation-safe windows as the
+       * regular 11.60 image.  The patch destinations are the exact regular
+       * offsets rebased onto the Pro HV code image, as in upstream 13.60. */
       args.hv_handle_vmexit_pa = HV_VMEXIT_PRO_1160;
       args.hv_code_cave_pa = HV_CAVE_PRO_1160;
     }
   }
 
+  _Static_assert(HV_REGION_BASE_PRO + HV_CODE_OFFSET_PRO ==
+                     HV_CODE_BASE_PRO_1160,
+                 "11.60 Pro HV code base changed");
   _Static_assert(HV_REGION_BASE_PRO + HV_CODE_OFFSET_PRO +
-                         UINT64_C(0x47540) ==
+                         (HV_VMEXIT_REGULAR_1160 - HV_BASE_REGULAR) ==
                      HV_VMEXIT_PRO_1160,
                  "11.60 Pro VMEXIT relocation changed");
   _Static_assert(HV_REGION_BASE_PRO + HV_CODE_OFFSET_PRO +
-                         UINT64_C(0x6ec0) ==
+                         (HV_CAVE_REGULAR_1160 - HV_BASE_REGULAR) ==
                      HV_CAVE_PRO_1160,
                  "11.60 Pro HV cave relocation changed");
 
