@@ -12,6 +12,11 @@
 > | PS5 Pro | `ps5-linux-loader-1160-dma-e820-bounded.elf` from [Pro Linux test 3](https://github.com/gzimbric/ps5-linux-loader/releases/tag/firmware-11.60-pro-linux-test-3) | [Ubuntu Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/ubuntu2404-k73-image-3) |
 >
 > PS5 Pro Linux is experimental. Test 3 reached the desktop on one Pro. Follow the [Pro tester README](PS5_PRO_1160_TESTING.md), including its `cmdline.txt` line, and don't use any other loader on a Pro. Regular consoles can follow the [Image 4 tester guide](https://github.com/gzimbric/ps5-linux-porting/blob/main/docs/cachyos1160-k73-image-4-tester-guide.md), and [PORTING_1160.md](PORTING_1160.md) has the build details.
+>
+> The feature list below describes the established Phat and Slim path. On Pro,
+> Test 3 has only confirmed a 1080p desktop, Ethernet/SSH, Wi-Fi and USB input
+> with the documented workaround. Pro Bluetooth, GPU temperature and gaming
+> remain untested or unavailable.
 
 Features:
 
@@ -28,6 +33,9 @@ Features:
 ## PS5 firmware
 
 *ps5-linux* is only supported on PS5 Phat and Slim on the following firmwares:
+
+The list below is the upstream support list. This fork's separate 11.60 paths
+are the tested combinations in the table at the top of this README.
 
 - **3.00**, **3.10**, **3.20**, **3.21** without M.2 support
 - **4.00**, **4.02**, **4.03**, **4.50**, **4.51** with M.2 support

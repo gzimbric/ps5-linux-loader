@@ -34,7 +34,8 @@ loader implements that observed path with exact-value and cardinality gates.
 Pro Linux test 2 reached Linux over SSH, but with the display handoff skipped
 the TV showed no signal. Pro Linux test 3 runs the handoff and reached the
 GNOME desktop at 1080p over HDMI on one Pro, on two cold boots. The Pro path is
-still a test candidate, not a hardware-proven release.
+still an experimental tester prerelease with one-console coverage, not broad
+hardware support.
 
 ## Deliberate 11.60 substitutions
 
