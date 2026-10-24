@@ -305,18 +305,12 @@ void boot_linux(void) {
   // Common bootloader code
   install_hv_code();
 
-  /* The same ELF serves regular and Pro consoles.  Keep the first Pro boot
-   * deliberately headless: its HV anchors and memory map are measured, but
-   * the regular console's VBIOS/DP/MP3 handoff has not been validated on Pro.
-   * The kernel and initrd still stage normally for Ethernet/SSH testing. */
+  /* The same ELF serves regular and Pro consoles, and both get the same
+   * VBIOS/DP/MP3 display handoff.  Without it the Pro's HDMI bridge never
+   * turns its output on: Linux trains DP-1 but the TV shows no signal. */
   memcpy(&info, (void *)args.linux_info_va, sizeof(struct linux_info));
-  const int pro_headless =
-      args.fw_version == PS5_FW_1160 &&
-      args.hv_handle_vmexit_pa == HV_VMEXIT_PRO_1160 &&
-      args.hv_code_cave_pa == HV_CAVE_PRO_1160;
 
 #if !SHELLCODE_1160_HEADLESS
-  if (!pro_headless) {
 #if SHELLCODE_1160_DIAGNOSTIC
   const uint32_t diag_pre_stage = ps5_diag_pre_stage_1160;
 
@@ -357,7 +351,6 @@ void boot_linux(void) {
     mp3_enable_output(0, 1);
   }
 #endif
-  }
 #endif
 
   // Copy bzImage and initrd into contiguous memory.

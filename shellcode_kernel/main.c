@@ -51,9 +51,7 @@ __attribute__((section(".entry_point"))) uint32_t main(uint64_t add1,
   }
   *(uint8_t *)args_ptr->kernel_cfi_check = 0xC3;
   boot_linux();
-  if (args.hv_handle_vmexit_pa != HV_VMEXIT_PRO_1160 ||
-      args.hv_code_cave_pa != HV_CAVE_PRO_1160)
-    run_ps5_display_ops_1160();
+  run_ps5_display_ops_1160();
   printf("Linux prepared OK\n");
   printf("Good Bye VM :)\n");
   smp_rendezvous(smp_no_rendevous_barrier, vmmcall_dummy,

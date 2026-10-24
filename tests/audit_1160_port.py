@@ -716,12 +716,13 @@ for required in (
     "Sonic MP3 buffers must remain 32-byte aligned",
     "args.linux_info_va + MP3_REQ_OFFSET",
     "args.linux_info_va + MP3_RSP_OFFSET",
-    "const int pro_headless =",
-    "args.hv_handle_vmexit_pa == HV_VMEXIT_PRO_1160",
-    "args.hv_code_cave_pa == HV_CAVE_PRO_1160",
-    "if (!pro_headless)",
 ):
     assert required in boot_linux_source, required
+# Regular and Pro consoles run the same display handoff.  A Pro-only skip left
+# the Pro's HDMI bridge output off (no signal) in Pro Linux test 2.
+assert "pro_headless" not in boot_linux_source
+assert "HV_VMEXIT_PRO_1160" not in boot_linux_source.split(
+    "void boot_linux(void)", 1)[1]
 assert "#if !SHELLCODE_1160_ONLY\n    clear_mp3_buffers();\n#endif" in boot_linux_source
 assert u32(349999999) in wake
 display_order = (
@@ -736,8 +737,8 @@ only_1160_main = wake_main_source.split("#if SHELLCODE_1160_ONLY", 2)[2].split(
 cursor = 0
 for step in display_order:
     cursor = only_1160_main.index(step, cursor) + len(step)
-assert "args.hv_handle_vmexit_pa != HV_VMEXIT_PRO_1160" in only_1160_main
-assert "args.hv_code_cave_pa != HV_CAVE_PRO_1160" in only_1160_main
+assert "HV_VMEXIT_PRO_1160" not in only_1160_main
+assert "HV_CAVE_PRO_1160" not in only_1160_main
 offsets_present_source = hv_defeat_source.split(
     "static int offsets_present", 1
 )[1].split("static int walk_page", 1)[0]
