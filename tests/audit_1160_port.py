@@ -373,7 +373,10 @@ hv_defeat_source = HV_DEFEAT.read_text()
 # loader may walk its page tables but must never read it.
 preflight_body = hv_defeat_source.split(
     "static int preflight_scan_range_1160(", 1)[1].split("\n}\n", 1)[0]
-assert "kernel_copyout" not in preflight_body
+preflight_calls = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", preflight_body))
+assert preflight_calls <= {"if", "for", "resolve_kernel_pa_1160"}, preflight_calls
+for forbidden in ("*", "[", "->", "kernel_copyout", "memcpy", "kread"):
+    assert forbidden not in preflight_body, forbidden
 boot_linux_source = BOOT_LINUX.read_text()
 ap_source = AP_SOURCE.read_text()
 args_validate_source = ARGS_VALIDATE.read_text()
@@ -682,9 +685,9 @@ else:
     for value in exact_size_immediates:
         assert value in elf, value
 
-# The universal build retains the hardware-tested display handoff on regular
-# consoles and takes an explicit runtime headless branch on Pro. It must not
-# silently regress to a compile-time headless blob. Its two large MP3 buffers
+# The universal build runs the hardware-tested display handoff on regular and
+# Pro consoles. It must not silently regress to a compile-time headless blob.
+# Its two large MP3 buffers
 # live in the checked, retained tail of the linux_info page so the exact
 # hardware-proven 0x5000 executable cave is not moved.
 assert "SHELLCODE_1160_HEADLESS" not in wake_makefile

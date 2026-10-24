@@ -95,10 +95,12 @@ power off before trying again.
   Games are untested.
 - The Linux drive ran at USB 2 speed in the port we tested, so installs and
   loading are slow.
-- Linux shows about 15 GB of memory. That's normal: part goes to the GPU and
-  the extra 2 GB on the Pro is used by the console itself.
+- Linux showed about 15 GB of memory on the tested Pro. The exact Pro memory
+  reservations have not been verified yet, so this observation should not be
+  used to diagnose missing RAM.
 - `ps5-boot-report.service` fails on this image. It doesn't affect anything
-  else.
+  else. The source fix is newer than Image 3 and is not included in the
+  released image.
 
 ## 4. Send back the results
 
