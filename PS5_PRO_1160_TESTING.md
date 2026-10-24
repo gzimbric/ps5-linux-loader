@@ -3,6 +3,8 @@
 This is an experimental Linux test for a retail PS5 Pro on firmware 11.60
 (`0x11600005`). Test 3 is the first Pro build with a picture. On one Pro it
 booted to the Ubuntu desktop at 1080p over HDMI, twice from a cold boot.
+A bounded 30-second `vkcube-wayland` test also completed through RADV with no
+new kernel messages and Tctl at 44.8 C.
 
 Test 1 panicked on every Pro. Test 2 booted Linux but the TV showed no signal,
 because it skipped the display setup on the Pro. Test 3 runs the same display
@@ -92,7 +94,8 @@ power off before trying again.
   keyboard.
 - The GPU runs at its default clock. The PS5 clock boost is off on the Pro and
   Linux can't read the GPU temperature yet, so stick to light use for now.
-  Games are untested.
+  Games and sustained GPU load are untested. The 30-second Vulkan cube above
+  was only a smoke test, not a stability or GPU-temperature result.
 - The Linux drive ran at USB 2 speed in the port we tested, so installs and
   loading are slow.
 - Linux showed about 15 GB of memory on the tested Pro. The exact Pro memory
