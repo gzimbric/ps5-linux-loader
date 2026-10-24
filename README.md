@@ -15,8 +15,9 @@
 >
 > The feature list below describes the established Phat and Slim path. On Pro,
 > Test 3 has only confirmed a 1080p desktop, Ethernet/SSH, Wi-Fi and USB input
-> with the documented workaround. Pro Bluetooth, GPU temperature and gaming
-> remain untested or unavailable.
+> with the documented workaround, plus a bounded 30-second Vulkan cube smoke
+> test. Pro Bluetooth, GPU temperature, gaming and sustained GPU load remain
+> untested or unavailable.
 
 Features:
 
