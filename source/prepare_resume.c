@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <sys/mman.h>
 #include <string.h>
+#include <unistd.h>
 
 static int apply_1360_dma_e820_map(void *buffer, size_t length) {
   static const struct {
@@ -256,14 +257,30 @@ uint64_t prepare_sck_args(void) {
   args.kernel_cfi_check = ktext + env_offset.KERNEL_CFI_CHECK;
   args.hv_handle_vmexit_pa = env_offset.HV_HANDLE_VMEXIT_PA;
   args.hv_code_cave_pa = env_offset.HV_CODE_CAVE_PA;
-  if ((PS5_FW_IS_11XX(fw) || fw == 0x1320 || fw == 0x1340 || fw == 0x1342 ||
-       fw == 0x1360) &&
-      linux_i.kit_type == KIT_RETAIL_PRO) {
+  if (PS5_FW_IS_11XX(fw) && linux_i.kit_type == KIT_RETAIL_PRO) {
+    if (fw != 0x1160 || kernel_get_fw_version() != 0x11600005U) {
+      notify("PS5 Pro wake arguments are supported only on retail 11.60\n");
+      return 0;
+    }
+    args.hv_handle_vmexit_pa = HV_VMEXIT_PRO_1160;
+    args.hv_code_cave_pa = HV_CAVE_PRO_1160;
+  } else if ((fw == 0x1320 || fw == 0x1340 || fw == 0x1342 ||
+              fw == 0x1360) &&
+             linux_i.kit_type == KIT_RETAIL_PRO) {
     uint64_t pro_base = derive_h() + HV_CODE_OFFSET_PRO;
     uint64_t hv_offset = pro_base - HV_BASE_REGULAR;
     args.hv_handle_vmexit_pa += hv_offset;
     args.hv_code_cave_pa += hv_offset;
   }
+
+  _Static_assert(HV_REGION_BASE_PRO + HV_CODE_OFFSET_PRO +
+                         UINT64_C(0x47551) ==
+                     HV_VMEXIT_PRO_1160,
+                 "11.60 Pro VMEXIT relocation changed");
+  _Static_assert(HV_REGION_BASE_PRO + HV_CODE_OFFSET_PRO +
+                         UINT64_C(0x6f00) ==
+                     HV_CAVE_PRO_1160,
+                 "11.60 Pro HV cave relocation changed");
 
   args.linux_info_va = linux_i.linux_info;
 

@@ -3,7 +3,7 @@
 
 #define PAGE_SIZE 0x4000ULL
 
-/* Firmwares that use the 11.x Sonic carrier and hypervisor-defeat path. */
+/* Firmwares that use the 11.x startup-AP carrier and hypervisor-defeat path. */
 #define PS5_FW_IS_11XX(fw)                                                     \
   ((fw) == 0x1100 || (fw) == 0x1120 || (fw) == 0x1140 || (fw) == 0x1160)
 
@@ -38,8 +38,10 @@
   "video=DP-1:1920x1080@60 mitigations=off idle=halt pci=pcie_bus_perf"
 
 // HV layout: derive_h() returns the region base at runtime. On regular the
-// HV binary starts at the region base; on Pro it sits 8MB in.
+// HV binary starts at the region base; on Pro it sits 8 MiB in.
 #define HV_BASE_REGULAR 0x062800000ULL
+#define HV_REGION_BASE_PRO 0x8e0000000ULL
+#define HV_REGION_SIZE_PRO 0x02000000ULL
 #define HV_CODE_OFFSET_PRO 0x800000ULL
 
 #define DEBUG 0 // Toggle to 0 to disable logs

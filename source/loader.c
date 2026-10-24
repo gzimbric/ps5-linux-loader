@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 const char *file_paths[] = {
     "/mnt/usb0/",           "/mnt/usb1/",           "/mnt/usb2/",
@@ -120,6 +121,13 @@ void trim_newline(char *s) {
 int fetch_linux(struct linux_info *info) {
   char bzimage_path[256];
   char initrd_path[256];
+  const enum kit_type detected_kit = get_kit_type();
+
+  if (PS5_FW_IS_11XX(fw) && detected_kit != KIT_RETAIL &&
+      !(fw == 0x1160 && detected_kit == KIT_RETAIL_PRO)) {
+    notify("11.x loader refused: console variant is not supported\n");
+    return -1;
+  }
 
   size_t bzimage_size = find_and_get_size_of_file("bzImage", bzimage_path);
   if (bzimage_size < 0) {
@@ -163,7 +171,9 @@ int fetch_linux(struct linux_info *info) {
     return -1;
   }
 
-  if (dump_device_firmwares(initrd_path) < 0) {
+  if (fw == 0x1160 && detected_kit == KIT_RETAIL_PRO) {
+    printf("PS5 Pro: skipping regular-model IW620 firmware dump\n");
+  } else if (dump_device_firmwares(initrd_path) < 0) {
     notify(
         "Something went wrong while dumping device firmwares - Continuing\n");
   }
@@ -201,7 +211,7 @@ int fetch_linux(struct linux_info *info) {
   info->initrd = kernel_cave_bzImage + ALIGN_UP(bzimage_size, PAGE_SIZE);
   info->initrd_size = initrd_size;
   info->vram_size = vram_size;
-  info->kit_type = (int)get_kit_type();
+  info->kit_type = (int)detected_kit;
   strcpy(info->cmdline, cmdline);
 
   if (PS5_FW_IS_11XX(fw)) {

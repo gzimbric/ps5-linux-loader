@@ -1,4 +1,4 @@
-.PHONY: all clean
+.PHONY: all clean test
 
 ifndef PS5_PAYLOAD_SDK
     PS5_PAYLOAD_SDK = /opt/ps5-payload-sdk/
@@ -47,7 +47,8 @@ $(SC_K_1160_H): $(SC_HV_H) shellcode_kernel/main.c \
 		shellcode_kernel/linker.ld include/config.h include/linux.h \
 		shellcode_kernel_1160/Makefile shellcode_kernel_1160/display_ops_1160.c \
 		shellcode_kernel_1160/display_ops_1160.h \
-		shellcode_kernel_1160/shellcode_kernel_args_validate.h
+		shellcode_kernel_1160/shellcode_kernel_args_validate.h \
+		shellcode_kernel_1160/resume_result_1160_validate.h
 	$(MAKE) -C shellcode_kernel_1160
 
 $(SC_BREAK_HV_H): shellcode_break_hv/break_hv.c \
@@ -73,3 +74,6 @@ clean:
 	$(MAKE) -C shellcode_kernel_13xx clean
 	$(MAKE) -C shellcode_kernel_1160 clean
 	$(MAKE) -C shellcode_break_hv clean
+
+test:
+	$(MAKE) -C tests check

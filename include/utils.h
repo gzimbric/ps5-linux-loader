@@ -9,6 +9,7 @@
 
 int sceKernelGetCurrentCpu();
 int sceKernelGetMainSocId();
+#define SOC_ID_PS5_PRO 0x840fd0
 int sceKernelSendNotificationRequest(int, void *, size_t, int);
 int sceKernelOpenEventFlag(void *, const char *);
 int sceKernelNotifySystemSuspendStart(void);
@@ -163,7 +164,13 @@ bool if_exists(const char *path);
 bool sceKernelIsTestKit(void);
 bool sceKernelIsDevKit(void);
 
-enum kit_type { KIT_RETAIL, KIT_TESTKIT, KIT_DEVKIT, KIT_RETAIL_PRO };
+enum kit_type {
+  KIT_UNKNOWN = -1,
+  KIT_RETAIL,
+  KIT_TESTKIT,
+  KIT_DEVKIT,
+  KIT_RETAIL_PRO
+};
 
 enum kit_type get_kit_type(void);
 

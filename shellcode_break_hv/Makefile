@@ -9,7 +9,7 @@ LD      = ld
 OBJCOPY = objcopy
 READELF = readelf
 endif
-CFLAGS  = -O2 -ffreestanding -nostdlib -fno-pic -fno-plt \
+CFLAGS  = -Os -ffreestanding -nostdlib -fno-pic -fno-plt \
 	-fno-stack-protector -fno-stack-clash-protection -fomit-frame-pointer \
 	-fno-asynchronous-unwind-tables -fcf-protection=none -fno-jump-tables \
 	-mgeneral-regs-only -mno-red-zone -Wall -Wextra

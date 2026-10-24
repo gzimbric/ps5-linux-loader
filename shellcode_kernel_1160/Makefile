@@ -23,7 +23,8 @@ OBJ = $(SRC:.c=.o) display_ops_1160.o
 HEADERS = ../shellcode_kernel/main.h ../shellcode_kernel/boot_linux.h \
 	../shellcode_kernel/utils.h ../shellcode_kernel/shellcode_kernel_args.h \
 	../include/config.h ../include/linux.h ../shellcode_hv/shellcode_hv.h \
-	display_ops_1160.h shellcode_kernel_args_validate.h
+	display_ops_1160.h shellcode_kernel_args_validate.h \
+	resume_result_1160_validate.h
 
 all: $(dump)
 

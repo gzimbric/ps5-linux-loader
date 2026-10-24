@@ -1,3 +1,4 @@
+#include "config.h"
 #include "utils.h"
 #include "linux.h"
 #include "offsets.h"
@@ -6,6 +7,7 @@
 #include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 /* Global Variables */
 offset_list env_offset;
@@ -23,6 +25,20 @@ int setup_env(void) {
     return -1;
   if (init_global_vars())
     return -1;
+  return 0;
+}
+
+static int validate_11xx_soc(int allow_pro) {
+  const int soc_id = sceKernelGetMainSocId();
+
+  if (soc_id < 0) {
+    notify("Could not identify the console SoC\n");
+    return -1;
+  }
+  if (!allow_pro && soc_id == SOC_ID_PS5_PRO) {
+    notify("PS5 Pro is supported only on retail 11.60 (0x11600005)\n");
+    return -1;
+  }
   return 0;
 }
 
@@ -102,6 +118,8 @@ int set_offsets(void) {
       notify("Only the retail 11.00 build (0x11000043) is supported\n");
       return -1;
     }
+    if (validate_11xx_soc(0))
+      return -1;
     env_offset = off_1100;
     break;
   case 0x1120:
@@ -109,6 +127,8 @@ int set_offsets(void) {
       notify("Only the retail 11.20 build (0x11200005) is supported\n");
       return -1;
     }
+    if (validate_11xx_soc(0))
+      return -1;
     env_offset = off_1120;
     break;
   case 0x1140:
@@ -116,18 +136,17 @@ int set_offsets(void) {
       notify("Only the retail 11.40 build (0x11400005) is supported\n");
       return -1;
     }
+    if (validate_11xx_soc(0))
+      return -1;
     env_offset = off_1140;
     break;
   case 0x1160:
-    // Only the retail 11.60 build on a regular PS5 has been tested.
     if (kernel_get_fw_version() != 0x11600005U) {
       notify("Only the retail 11.60 build (0x11600005) is supported\n");
       return -1;
     }
-    if (sceKernelGetMainSocId() == 0x840fd0) {
-      notify("11.60 is supported on the regular PS5 only\n");
+    if (validate_11xx_soc(1))
       return -1;
-    }
     env_offset = off_1160;
     break;
   case 0x1300:
@@ -358,10 +377,6 @@ bool sceKernelIsDevKit(void) {
 }
 
 enum kit_type get_kit_type(void) {
-  if (sceKernelGetMainSocId() == 0x840fd0) {
-    notify("PS5 Pro detected\n");
-    return KIT_RETAIL_PRO;
-  }
   if (sceKernelIsDevKit()) {
     notify("DevKit detected\n");
     return KIT_DEVKIT;
@@ -369,6 +384,15 @@ enum kit_type get_kit_type(void) {
   if (sceKernelIsTestKit()) {
     notify("TestKit detected\n");
     return KIT_TESTKIT;
+  }
+  const int soc_id = sceKernelGetMainSocId();
+  if (soc_id == SOC_ID_PS5_PRO) {
+    notify("PS5 Pro detected\n");
+    return KIT_RETAIL_PRO;
+  }
+  if (PS5_FW_IS_11XX(fw) && soc_id < 0) {
+    notify("Could not identify the console SoC\n");
+    return KIT_UNKNOWN;
   }
   notify("Retail console detected\n");
   return KIT_RETAIL;

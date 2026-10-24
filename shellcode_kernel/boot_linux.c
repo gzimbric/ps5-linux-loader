@@ -3,6 +3,9 @@
 #include "../include/linux.h"
 #include "../shellcode_hv/shellcode_hv.h"
 #include "utils.h"
+#if defined(FW_1160)
+#include "shellcode_kernel_args_validate.h"
+#endif
 
 #define DIG1TRANSMITTERCONTROL 0x4c
 
@@ -146,7 +149,11 @@ static void install_hv_code(void) {
 
   // Keep the HV trampoline mapped after switching CR3.
   uint64_t cave_index = args.hv_code_cave_pa >> 30;
-  if (cave_index >= l3_size) {
+#if defined(FW_1160)
+  _Static_assert((HV_CAVE_PRO_1160 >> 30) == 0x23,
+                 "11.60 Pro cave identity index changed");
+#endif
+  if (cave_index >= l3_size && cave_index < 512) {
     *(uint64_t *)PHYS_TO_DMAP(l40_l3_addr + cave_index * 8) =
         (cave_index << 30) | 0x83;
   }
@@ -163,6 +170,13 @@ void patch_hv(void) {
                                0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // movabs rax, imm64
                                0xFF, 0xE0};                    // jmp rax
 
+#if defined(FW_1160)
+    _Static_assert(HV_VMEXIT_PRO_1160 >=
+                           HV_CODE_BASE_PRO_1160 + UINT64_C(0x47540) &&
+                       HV_VMEXIT_PRO_1160 + sizeof(shellcode_jmp) <=
+                           HV_CODE_BASE_PRO_1160 + UINT64_C(0x47580),
+                   "Pro VMEXIT patch left its authenticated window");
+#endif
     *(uint64_t *)(&shellcode_jmp[2]) = args.hv_code_cave_pa;
     memcpy((void *)PHYS_TO_DMAP(args.hv_handle_vmexit_pa), shellcode_jmp,
            sizeof(shellcode_jmp));
@@ -188,6 +202,14 @@ void patch_hv(void) {
       0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // movabs rax, 0xAAAAAAAAAAAAAAAA
       0xFF, 0xE0                    // jmp    rax
   };
+
+#if defined(FW_1160)
+  _Static_assert(HV_CAVE_PRO_1160 >=
+                         HV_CODE_BASE_PRO_1160 + UINT64_C(0x6ec0) &&
+                     HV_CAVE_PRO_1160 + sizeof(shellcode_identity_and_jmp) <=
+                         HV_CODE_BASE_PRO_1160 + UINT64_C(0x6f40),
+                 "Pro cave patch left its authenticated window");
+#endif
 
   // Update CR3 PA (from config)
   *(uint64_t *)(&shellcode_identity_and_jmp[2]) = cave_hv_paging;
