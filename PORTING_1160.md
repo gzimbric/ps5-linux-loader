@@ -31,8 +31,10 @@ The PS5 Pro path has a narrower evidence boundary. A bounded on-device census
 validated its exact boot metadata, HV geometry, three relocated code anchors,
 all 16 startup-AP targets, and restoration of temporary state. The universal
 loader implements that observed path with exact-value and cardinality gates.
-It has not yet completed a destructive Linux boot on Pro hardware, so the Pro
-path is a test candidate, not a hardware-proven release.
+Pro Linux test 2 reached Linux over SSH, but with the display handoff skipped
+the TV showed no signal. Pro Linux test 3 runs the handoff and reached the
+GNOME desktop at 1080p over HDMI on one Pro, on two cold boots. The Pro path is
+still a test candidate, not a hardware-proven release.
 
 ## Deliberate 11.60 substitutions
 
@@ -120,10 +122,9 @@ path is a test candidate, not a hardware-proven release.
   `0x8e0000000..0x8e2000000`, and reserves
   `0x8e2000000..0x900000000`. It deliberately does not expose the unverified
   high apertures as RAM.
-- One universal wake blob keeps the proven VBIOS/DP/MP3 handoff and 29 display
-  operations on a regular PS5. When the validated Pro HV address pair is
-  selected, it skips those regular-only calls and continues with kernel/initrd
-  staging and the Linux transition for a wired, headless first boot.
+- One universal wake blob runs the VBIOS/DP/MP3 handoff and the 29 display
+  operations on both regular and Pro consoles. Pro Linux test 2 skipped them on
+  the Pro; Linux trained DP-1 but the TV showed no signal.
 
 ## Build and audit
 
@@ -580,32 +581,32 @@ addresses or substitute a build for another firmware revision. This loader
 mutates IDT/TSS/FACS state and the hypervisor path. If it refuses because
 carrier state is stale, cold reboot; do not retry it in the same GameOS boot.
 
-The regular path has completed the full Linux boot. The Pro path has completed
-only the bounded, restoring census described above. Its first loader run must
-therefore be treated as a controlled destructive hardware test with a cold
-reboot available. A successful build, carrier arm, Rest Mode transition, white
-light, ping, or DRM connector state alone does not establish a Pro Linux boot.
+The regular path has completed the full Linux boot. On the Pro, test 3 reached
+the GNOME desktop at 1080p over HDMI on one console, on two cold boots, with
+Image 3 and the arguments below. A successful build, carrier arm, Rest Mode
+transition, white light, ping, or DRM connector state alone does not establish
+a Pro Linux boot or a Pro picture; test 2 had all of those with no signal.
 
-For that first Pro run, use the exact published
+For Pro runs, use the exact published
 [Ubuntu 24.04 Image 3](https://github.com/gzimbric/ps5-linux-image/releases/tag/ubuntu2404-k73-image-3)
 with the exact
-[`ps5-linux-loader-1160-dma-e820-bounded.elf`](https://github.com/gzimbric/ps5-linux-loader/releases/download/firmware-11.60-pro-linux-test-2/ps5-linux-loader-1160-dma-e820-bounded.elf)
-from the corrected tester prerelease rather than rebuilding either component.
-Its SHA-256 is
-`70ee361202fa7e233294b00cb0c37d496be33bf9235e2fb872d5eca8290f4564`.
+[`ps5-linux-loader-1160-dma-e820-bounded.elf`](https://github.com/gzimbric/ps5-linux-loader/releases/download/firmware-11.60-pro-linux-test-3/ps5-linux-loader-1160-dma-e820-bounded.elf)
+from the test 3 prerelease rather than rebuilding either component. Its SHA-256
+is `3ab6609fb36edec23d3964215690563cb92071a0831f00608d977d9d7be7ce0b`.
 Follow the
-[PS5 Pro 11.60 tester README](PS5_PRO_1160_TESTING.md).
-Attach Ethernet and add these temporary kernel arguments to `cmdline.txt` so
-the first milestone is authenticated SSH, not an unvalidated modeset or
-clock/fan policy:
+[PS5 Pro 11.60 tester README](PS5_PRO_1160_TESTING.md) and add these kernel
+arguments to `cmdline.txt`.
 
 ```text
-systemd.unit=multi-user.target systemd.mask=ps5-performance.service systemd.mask=ps5fan.service modprobe.blacklist=amdgpu,ps5_gpufreq,ps5_cpufreq module_blacklist=amdgpu,ps5_gpufreq,ps5_cpufreq
+modprobe.blacklist=ps5_gpufreq,ps5_cpufreq module_blacklist=ps5_gpufreq,ps5_cpufreq usbcore.autosuspend=-1
 ```
 
-This is a first-boot containment profile, not a claim that those devices are
-unsupported. Remove one gate at a time only after the headless baseline is
-captured.
+The frequency drivers stay off because their clock tables are for the regular
+APU. `usbcore.autosuspend=-1` keeps the Pro's two AMD xHCI controllers
+(`1022:13de`, `1022:13dd`) out of runtime suspend. They report xHCI 1.2, so
+Linux allows runtime PM on them by default, and on the Pro a controller that
+reaches D3hot cannot return to D0 (it logs `HC died` and its ports stay dead
+until reboot).
 
 UART is optional. Authenticate Linux over wired SSH independently of monitor
 state; a white light, ping, DRM connector state, or modeset return alone is not
