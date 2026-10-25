@@ -135,6 +135,9 @@ built=0
 # and Pro HV address pairs. The startup-AP synthetic-DMAP test runs through
 # every target's break-hv-1160-check dependency.
 mkdir -p build/tests
+cc -std=c11 -O2 -Wall -Wextra -Werror tests/test_pro_hv_layout_1160.c \
+  -o build/tests/test_pro_hv_layout_1160
+build/tests/test_pro_hv_layout_1160
 cc -std=c11 -O2 -Wall -Wextra -Werror tests/test_shellcode_kernel_args.c \
   -o build/tests/test_shellcode_kernel_args
 build/tests/test_shellcode_kernel_args

@@ -285,7 +285,10 @@ assert elf.count(u32(0x11600005)) >= 2
 assert elf.count(u32(0x840FD0)) >= 1
 assert b"PS5 Pro HV layout is not validated" not in elf
 assert b"PS5 Pro detected" in elf
-assert b"11.60 Pro HV metadata did not match; refusing to arm" in elf
+assert b"11.60 Pro dynamic HV geometry did not match; refusing to arm" in elf
+assert b"11.60 Pro dynamic wake-address rebase failed; refusing to continue" in elf
+assert b"11.60 Pro dynamic HV: region" in elf
+assert b"11.60 Pro dynamic wake addresses: VMEXIT" in elf
 assert u64(0x8E0806F00) in elf
 assert u64(0x8E0847551) in elf
 assert u64(0x8E0806EC0) not in elf
@@ -368,6 +371,7 @@ for marker in (
 loader_source = LOADER.read_text()
 staging_source = STAGING.read_text()
 hv_defeat_source = HV_DEFEAT.read_text()
+prepare_resume_source = PREPARE_RESUME.read_text()
 
 # The VMCB scan range is hypervisor memory.  Before the startup-AP strike the
 # loader may walk its page tables but must never read it.
@@ -391,9 +395,9 @@ wake_main_source = WAKE_MAIN.read_text()
 # layouts and reaches no HV write until identity/cardinality checks pass.
 for required in (
     "OFF_BOOT_METADATA_1160 0x3e10000ULL",
-    "candidate_base == HV_REGION_BASE_PRO",
-    "candidate_size == HV_REGION_SIZE_PRO",
-    "candidates == 1",
+    "candidate_base != HV_REGION_BASE_PRO",
+    "candidate_size != HV_REGION_SIZE_PRO",
+    "candidates != 1",
     "STORE_PARAM(0xf18, scan_lo)",
     "STORE_PARAM(0xf40, scan_hi)",
     "preflight_scan_range_1160(scan_lo, scan_hi)",
@@ -403,10 +407,17 @@ for required in (
     "uint64_t iret = kg(env_offset.GAD_IRETQ)",
     "CAVE_FALLBACKS_OFF + FALLBACK_COUNT * FALLBACK_SIZE <=",
     "FRAME_OFF + 5 * sizeof(uint64_t) == STACK_TOP_OFF",
-    "validate_pro_hv_region_1160()",
+    "resolve_pro_hv_layout_1160(&pro_layout)",
+    "calculate_pro_hv_layout_1160(",
     "linux_i.kit_type == KIT_RETAIL_PRO",
 ):
     assert required in hv_defeat_source, required
+for required in (
+    "resolve_pro_hv_layout_1160(&pro_layout)",
+    "args.hv_handle_vmexit_pa = pro_layout.vmexit_pa",
+    "args.hv_code_cave_pa = pro_layout.cave_pa",
+):
+    assert required in prepare_resume_source, required
 fallback_source = hv_defeat_source.split(
     "static int build_bounded_iret", 1
 )[1].split("static int build_arm", 1)[0]

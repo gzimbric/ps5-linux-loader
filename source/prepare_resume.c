@@ -12,6 +12,9 @@
 #include "../shellcode_kernel/shellcode_kernel_args.h"
 #include "../shellcode_kernel/shellcode_kernel_args_validate.h"
 #include "config.h"
+#if FW_1160_PORT
+#include "hv_defeat_1160.h"
+#endif
 #include "iommu.h"
 #include "offsets.h"
 #include "utils.h"
@@ -414,11 +417,28 @@ uint64_t prepare_sck_args(void) {
       return 0;
     }
     if (linux_i.kit_type == KIT_RETAIL_PRO) {
+#if FW_1160_PORT
+      struct pro_hv_layout_1160 pro_layout = {0};
+      if (resolve_pro_hv_layout_1160(&pro_layout) != 0 ||
+          pro_layout.vmexit_pa != HV_VMEXIT_PRO_1160 ||
+          pro_layout.cave_pa != HV_CAVE_PRO_1160) {
+        notify("11.60 Pro dynamic wake-address rebase failed; refusing to "
+               "continue\n");
+        return 0;
+      }
+      args.hv_handle_vmexit_pa = pro_layout.vmexit_pa;
+      args.hv_code_cave_pa = pro_layout.cave_pa;
+      printf("11.60 Pro dynamic wake addresses: VMEXIT 0x%llx cave 0x%llx\n",
+             (unsigned long long)pro_layout.vmexit_pa,
+             (unsigned long long)pro_layout.cave_pa);
+      fflush(stdout);
+#else
       /* The Pro census authenticated the same relocation-safe windows as the
        * regular 11.60 image.  The patch destinations are the exact regular
        * offsets rebased onto the Pro HV code image, as in upstream 13.60. */
       args.hv_handle_vmexit_pa = HV_VMEXIT_PRO_1160;
       args.hv_code_cave_pa = HV_CAVE_PRO_1160;
+#endif
     }
   }
 

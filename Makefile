@@ -145,6 +145,9 @@ break-hv-1160-check:
 	$(MAKE) -C shellcode_break_hv check
 	@mkdir -p build/tests
 	@$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror \
+		tests/test_pro_hv_layout_1160.c -o build/tests/test_pro_hv_layout_1160
+	@build/tests/test_pro_hv_layout_1160
+	@$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror \
 		tests/test_break_hv_1160.c -o build/tests/test_break_hv_1160
 	@build/tests/test_break_hv_1160
 	@$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror \
@@ -452,6 +455,7 @@ clean:
 		$(PORT_1160_DMA_E820_VISIBLE_OBJS) $(PORT_1160_DMA_E820_WIFI_OBJS) \
 		$(PORT_1160_DMA_E820_BOUNDED_OBJS) $(PORT_1160_DMA_E820_BOUNDED_WIFI_OBJS)
 	rm -f build/tests/test_shellcode_kernel_args build/tests/test_boot_files_1160 \
+		build/tests/test_pro_hv_layout_1160 \
 		build/tests/test_break_hv_1160 build/tests/test_resume_result_1160
 	$(MAKE) -C shellcode_0607 clean
 	$(MAKE) -C shellcode_hv clean
