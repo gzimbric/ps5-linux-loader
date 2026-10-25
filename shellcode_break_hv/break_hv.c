@@ -37,8 +37,9 @@ static __attribute__((noinline)) void vmcb_write32(uint64_t p, uint32_t v) {
  * its ASID as the GameOS ASID, and write nothing unless the scan finds exactly
  * one such VMCB and sixteen valid GameOS VMCBs. */
 static void vmcb_disable_np_1160(uint64_t *param) {
-  const uint64_t heap_lo = 0x62A00000ULL;
-  const uint64_t heap_hi = 0x63800000ULL;
+  const uint64_t hv_offset = param[3];
+  const uint64_t heap_lo = 0x62A00000ULL + hv_offset;
+  const uint64_t heap_hi = 0x63800000ULL + hv_offset;
   const uint64_t dmap = param[1];
   const uint64_t needle_rip = param[5];
   const uint64_t needle_cr3 = param[6];

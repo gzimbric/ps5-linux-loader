@@ -119,13 +119,8 @@ int set_offsets(void) {
     env_offset = off_1140;
     break;
   case 0x1160:
-    // Only the retail 11.60 build on a regular PS5 has been tested.
     if (kernel_get_fw_version() != 0x11600005U) {
       notify("Only the retail 11.60 build (0x11600005) is supported\n");
-      return -1;
-    }
-    if (sceKernelGetMainSocId() == 0x840fd0) {
-      notify("11.60 is supported on the regular PS5 only\n");
       return -1;
     }
     env_offset = off_1160;

